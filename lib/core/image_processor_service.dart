@@ -32,26 +32,20 @@ class ImageProcessor {
       grayMat = cv.cvtColor(srcMat, cv.COLOR_BGRA2GRAY);         //grayscaling the image into grayscale BGRA format
     }
     
-    //255 - background to push all the way to pure white
-    //cv.ADAPTIVE_THRESH_GAUSSIAN_C - this calculated a weighted average of the lighting. Used to handle grossy reflections in images.
-    //cv.THRESH_BINARY - forces the image to be white or black. (No gray allowed.)
-    // 21 - size of the local pixel grid (21x21 pixels)
-    final cleanMat = cv.adaptiveThreshold(grayMat, 255, cv.ADAPTIVE_THRESH_GAUSSIAN_C, cv.THRESH_BINARY, 21, 10);
-
-    if (isAndroid){
-      Uint8List yBytes = cleanMat.data; // The grayscale image is our Y-plane //Y are one byte per pixel
+    if (isAndroid){       
+      Uint8List yBytes = grayMat.data; // The grayscale image is our Y-plane //Y are one byte per pixel. //uses this one instead of adaptive_thresh because google ML kit uses natural modern LLM
       int uvSize = (width * height) ~/ 2; // NV21 UV-plane size because UV colors are one pair for every 2×2 pixels
     
       Uint8List nv21Bytes = Uint8List(yBytes.length + uvSize);   //nv21 arrary is a combination of Y scale (brightness) and UV(color)
 
-      nv21Bytes.setRange(0, yBytes.length, yBytes); // 1. fill in the beginning till Yscale (yBytes.length) with grayscale
+      nv21Bytes.setRange(0, yBytes.length, yBytes); // fill in the beginning till Yscale (yBytes.length) with grayscale
       nv21Bytes.fillRange(yBytes.length, nv21Bytes.length, 128); //fill the rest of the NV21 arrary with UV colors which is 128 (color for grayscale images)
       return nv21Bytes;
     } else{    
     //Converting the 1-channel gray binary image back into 4-channel BGRA format to let both andriod and IOS understasnd
-    final finalBgraMat = cv.cvtColor(cleanMat, cv.COLOR_GRAY2BGRA);
+      final finalBgraMat = cv.cvtColor(grayMat, cv.COLOR_GRAY2BGRA);
 
-    return finalBgraMat.data; // Temporary return so it compiles
+      return finalBgraMat.data; // Temporary return so it compiles
     }
   }
 }
@@ -62,23 +56,23 @@ class OCRProcess{
   final TextRecognizer _textRecognizer = TextRecognizer(script: TextRecognitionScript.latin); //used the TextRecognizer with latin script to read english
 
   //creating a method for scanLabel operations
-  Future<String> scanLabel(Uint8List rawBytes,int width,int height,bool isAndroid) async {
+  Future<String> scanLabel(Uint8List rawBytes,int width,int height,bool isAndroid, int sensorOrientation) async {
     //initlizing a variable with the cleaned image
     Uint8List cleanBytes = _processor.Imageprocess(rawBytes,width,height,isAndroid);
 
+    final rotation = InputImageRotationValue.fromRawValue(sensorOrientation) ?? InputImageRotation.rotation0deg; //basically rotation of your camera
     //inputing data into ML.
     //size - size of data
-    //rotation - your rotation of your phone (so your image)
-    //format - BGRA8888 format (because we changed to this format earlier in the ImageProsessor method)
+    //format - NV21 (android) or BGRA8888 (IOS) format 
     //bytesPerRow - BGRA has 4 channel so 4 bytes per pixel
     final metadata = InputImageMetadata(
       size: Size(width.toDouble(), height.toDouble()),
-      rotation: InputImageRotation.rotation0deg,
+      rotation: rotation,
       format: isAndroid ? InputImageFormat.nv21 : InputImageFormat.bgra8888,
-      bytesPerRow: isAndroid ? width : (width * 4),
+      bytesPerRow: isAndroid ? width : (width * 4), //4 channel so "* 4"
     );
 
-    //Assemble the InputImage using your clean bytes and metadata
+    //Assemble the InputImage
     final inputImage = InputImage.fromBytes(bytes: cleanBytes, metadata: metadata);
 
     //Feed the 4 channel grayscale image to the ML kit engine
@@ -89,24 +83,24 @@ class OCRProcess{
   
   }
 }
-//=============ACTUALLY MAIN=================================================
-Future<void> main() async {
-  // 1. Point directly to the test image
-  final inputImage = InputImage.fromFilePath('D:/Internship/flutter_application_1/img/test1.png');
+// //=============ACTUALLY MAIN=================================================
+// Future<void> main() async {
+//   // Point directly to the test image
+//   final inputImage = InputImage.fromFilePath('D:/Internship/flutter_application_1/img/test1.png');
 
-  // 2. Initialize the ML Kit engine to read latin
-  final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin); 
+//   //Initialize the ML Kit engine to read latin
+//   final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin); 
 
-  // 3. Process the image (requires await, which is why main() is now async) used await to pause the code to let the ML process data 
-  print("Scanning image...");
-  final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
-  // 4. Print the extracted text blocks
-  for (TextBlock block in recognizedText.blocks) {
-    print("Found text: ${block.text}");
-  }
+//   //Process the image. Used await to pause the code to let the ML process data 
+//   print("Scanning image...");
+//   final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
+//   //Print the extracted text blocks
+//   for (TextBlock block in recognizedText.blocks) {
+//     print("Found text: ${block.text}");
+//   }
 
-  // 5. Clean up memory
-  textRecognizer.close();
-  print("Process completed.");
-}
+
+//   textRecognizer.close();
+//   print("Process completed.");
+// }
 

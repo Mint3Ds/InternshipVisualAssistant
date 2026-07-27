@@ -104,7 +104,7 @@ class _HomePageState extends State<HomePage>{
         cameras = _cameras;         //setting cameras list with the list of cameras from _cameras
         cameraController = CameraController(
           _cameras.first, // <--- first because backcamera (need to optimized this)
-          ResolutionPreset.high, 
+          ResolutionPreset.max, 
           enableAudio: false, // turn off microphone 
           imageFormatGroup: Platform.isAndroid 
               ? ImageFormatGroup.yuv420     //if andriod hardcode to change format into yuv420
@@ -131,9 +131,9 @@ class _HomePageState extends State<HomePage>{
             final Uint8List rawBytes = allBytes.done().buffer.asUint8List();
             
             final bool isAndroid = Platform.isAndroid;
-
+            final int sensorOrientation = cameraController!.description.sensorOrientation; //give your phone camera orientation
             // --- FEED THE ENGINE ---
-            final String result = await _ocrService.scanLabel(rawBytes, image.width, image.height, isAndroid);
+            final String result = await _ocrService.scanLabel(rawBytes, image.width, image.height, isAndroid,sensorOrientation);
             
             if (mounted) {
               setState(() {
