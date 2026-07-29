@@ -13,6 +13,8 @@ dependencies:
   opencv_dart: ^2.2.1+4
   camera: ^0.12.0+2
   gal: ^2.3.2
+  sqflite: ^2.4.3
+  path: ^1.9.1
 
 dev_dependencies:
   flutter_test:

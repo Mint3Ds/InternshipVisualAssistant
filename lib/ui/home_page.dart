@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/image_processor_service.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:io';
+import '../core/database.dart';
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -17,6 +18,7 @@ class _HomePageState extends State<HomePage>{
   CameraController? cameraController;
   bool _captureNextFrame = false;
   final OCRProcess _ocrService = OCRProcess();
+  final DatabaseService _dbService = DatabaseService();
   String _scanResult = "Tap the camera to scan";
 
   @override
@@ -134,7 +136,24 @@ class _HomePageState extends State<HomePage>{
             final int sensorOrientation = cameraController!.description.sensorOrientation; //give your phone camera orientation
             // --- FEED THE ENGINE ---
             final String result = await _ocrService.scanLabel(rawBytes, image.width, image.height, isAndroid,sensorOrientation);
-            
+
+            //Database logic
+            if (result.isNotEmpty){
+              //initalized result text and current time
+              final newScan = ScannedLabels(text: result, times: DateTime.now().toIso8601String(),);
+
+              //insert into database
+              await _dbService.insertLabels(newScan);
+              print("Successfully saved to database!");
+
+              final savedLabels = await _dbService.outPutLabels(limitCount: 3); //parameters are optionals, rn limit count: 3 is a test data
+              print("--- CURRENT DATABASE LOGS ---");
+              for (var label in savedLabels) {
+                print("ID: ${label.id} | Text: ${label.text} | Time: ${label.times}");
+              }
+              print("-----------------------------");
+            }
+            // ====================================================================================================
             if (mounted) {
               setState(() {
                 _scanResult = result.isEmpty ? "No text found." : result;
