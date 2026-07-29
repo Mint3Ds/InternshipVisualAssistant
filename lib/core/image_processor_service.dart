@@ -56,7 +56,7 @@ class OCRProcess{
   final TextRecognizer _textRecognizer = TextRecognizer(script: TextRecognitionScript.latin); //used the TextRecognizer with latin script to read english
 
   //creating a method for scanLabel operations
-  Future<String> scanLabel(Uint8List rawBytes,int width,int height,bool isAndroid, int sensorOrientation) async {
+  Future<RecognizedText> scanLabel(Uint8List rawBytes,int width,int height,bool isAndroid, int sensorOrientation) async {
     //initlizing a variable with the cleaned image
     Uint8List cleanBytes = _processor.Imageprocess(rawBytes,width,height,isAndroid);
 
@@ -78,11 +78,35 @@ class OCRProcess{
     //Feed the 4 channel grayscale image to the ML kit engine
     final RecognizedText recognizedText = await _textRecognizer.processImage(inputImage);
 
-    //Return the raw extracted string back to the UI
-    return recognizedText.text;
+    //Return the raw extracted recognized text format (not string) back to the UI
+     return recognizedText;
   
   }
 }
+
+//this entire function basically takes the RecognizedText from machine ML kit and find the highest height of text line (instead of block).
+//because the title usual are the biggest on the labels.
+class TitleExtraction {
+  String extractTitle(RecognizedText recognizedText) {
+    String medName = "";
+    double maxLineHeight = 0;
+
+    // Iterate through blocks, and then through individual lines
+    for (TextBlock block in recognizedText.blocks) {
+      for (TextLine line in block.lines) {
+        final double lineHeight = line.boundingBox.height;
+
+        // Find the line with the largest physical height (largest font)
+        if (lineHeight > maxLineHeight) {
+          maxLineHeight = lineHeight;
+          medName = line.text;
+        }
+      }
+    }
+    return medName.trim().toLowerCase();
+  }
+}
+
 // //=============ACTUALLY MAIN=================================================
 // Future<void> main() async {
 //   // Point directly to the test image

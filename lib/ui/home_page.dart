@@ -1,5 +1,6 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
+import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
 import '../core/image_processor_service.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:io';
@@ -19,6 +20,7 @@ class _HomePageState extends State<HomePage>{
   bool _captureNextFrame = false;
   final OCRProcess _ocrService = OCRProcess();
   final DatabaseService _dbService = DatabaseService();
+  final TitleExtraction _titleExtract = TitleExtraction();
   String _scanResult = "Tap the camera to scan";
 
   @override
@@ -135,12 +137,14 @@ class _HomePageState extends State<HomePage>{
             final bool isAndroid = Platform.isAndroid;
             final int sensorOrientation = cameraController!.description.sensorOrientation; //give your phone camera orientation
             // --- FEED THE ENGINE ---
-            final String result = await _ocrService.scanLabel(rawBytes, image.width, image.height, isAndroid,sensorOrientation);
-
+            //basically feed the scanned text stream frm camera into google ML kit and get back RTresult (RecognizedTextResults)
+            final RecognizedText RTresult = await _ocrService.scanLabel(rawBytes, image.width, image.height, isAndroid,sensorOrientation);
+            final String result = RTresult.text;      //covert the RTRESULT into a string format
+            final String medTitle = _titleExtract.extractTitle(RTresult);  //this one uses the RTresult to feed into titleExtract function so we can extract the biggest lines text from the scanned image
             //Database logic
-            if (result.isNotEmpty){
-              //initalized result text and current time
-              final newScan = ScannedLabels(text: result, times: DateTime.now().toIso8601String(),);
+            if (medTitle.isNotEmpty){
+              //initalized medTitle text and current time
+              final newScan = ScannedLabels(text: medTitle, times: DateTime.now().toIso8601String(),);
 
               //insert into database
               await _dbService.insertLabels(newScan);
