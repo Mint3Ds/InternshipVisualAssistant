@@ -5,6 +5,7 @@ import '../core/image_processor_service.dart';
 import 'package:flutter/foundation.dart';
 import 'dart:io';
 import '../core/database.dart';
+import 'package:flutter/services.dart'; // NEW: Required for HapticFeedback
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -107,7 +108,7 @@ class _HomePageState extends State<HomePage>{
       setState(() {
         cameras = _cameras;         //setting cameras list with the list of cameras from _cameras
         cameraController = CameraController(
-          _cameras.first, // <--- first because backcamera (need to optimized this)
+          _cameras.first, // first because backcamera (need to optimized this)
           ResolutionPreset.max, 
           enableAudio: false, // turn off microphone 
           imageFormatGroup: Platform.isAndroid 
@@ -115,8 +116,11 @@ class _HomePageState extends State<HomePage>{
               : ImageFormatGroup.bgra8888,  //if ios hardcode to change format into BGRA8888
         );
       });
-      cameraController?.initialize().then((_) {
+      cameraController?.initialize().then((_) async{
         if (!mounted) return; // Standard safety check
+
+        await cameraController?.setFocusMode(FocusMode.auto);   //force the camera to auto focus 
+
         setState((){});
         cameraController?.startImageStream((CameraImage image) async {
           //deleting the current captured frame to get next frame
@@ -166,7 +170,12 @@ class _HomePageState extends State<HomePage>{
           } catch (e) {
             if (mounted) {
               setState(() {
-                _scanResult = "Error: $e";
+                if (e.toString().contains("BLURRY_FRAME")){
+                  _scanResult = "Too blurry. Please hold still.";
+                  HapticFeedback.vibrate();
+                }else{
+                    _scanResult = "Error: $e";
+                }
               });
             }
           }

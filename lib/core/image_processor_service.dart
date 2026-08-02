@@ -20,7 +20,7 @@ import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart
 class ImageProcessor {
 
   //accepts raw bytes and dimensions from the camera sensors and a flag to identify which os we are reading
-  Uint8List Imageprocess(Uint8List rawBytes, int width, int height, bool isAndroid) {
+  (Uint8List,double) Imageprocess(Uint8List rawBytes, int width, int height, bool isAndroid) {
     final cv.Mat srcMat;   //initizing var called srcMat
     final cv.Mat grayMat;
     if (isAndroid) {      //checking for andriod 
@@ -31,21 +31,33 @@ class ImageProcessor {
       srcMat = cv.Mat.fromList(height, width, cv.MatType.CV_8UC4, rawBytes); //used BGRA8888 (4 channel format) for IOS
       grayMat = cv.cvtColor(srcMat, cv.COLOR_BGRA2GRAY);         //grayscaling the image into grayscale BGRA format
     }
+
+    final enhancedGray = cv.equalizeHist(grayMat); //flattening lighting to reduce glare
+
+    // --- THE BLUR DETECTION (Laplacian Variance) ---
+    //run the edge detection filter 
+    final laplacian = cv.laplacian(enhancedGray, cv.MatType.CV_64F);
+    
+    //get the standard deviation of the edges
+    final (mean, stdDev) = cv.meanStdDev(laplacian);
+    
+    //Square the standard deviation to get the variance blur score
+    final double blurScore = stdDev.val[0] * stdDev.val[0];
     
     if (isAndroid){       
-      Uint8List yBytes = grayMat.data; // The grayscale image is our Y-plane //Y are one byte per pixel. //uses this one instead of adaptive_thresh because google ML kit uses natural modern LLM
+      Uint8List yBytes = enhancedGray.data; // The grayscale image is our Y-plane //Y are one byte per pixel. //uses this one instead of adaptive_thresh because google ML kit uses natural modern LLM
       int uvSize = (width * height) ~/ 2; // NV21 UV-plane size because UV colors are one pair for every 2×2 pixels
     
       Uint8List nv21Bytes = Uint8List(yBytes.length + uvSize);   //nv21 arrary is a combination of Y scale (brightness) and UV(color)
 
       nv21Bytes.setRange(0, yBytes.length, yBytes); // fill in the beginning till Yscale (yBytes.length) with grayscale
       nv21Bytes.fillRange(yBytes.length, nv21Bytes.length, 128); //fill the rest of the NV21 arrary with UV colors which is 128 (color for grayscale images)
-      return nv21Bytes;
+      return (nv21Bytes, blurScore);
     } else{    
     //Converting the 1-channel gray binary image back into 4-channel BGRA format to let both andriod and IOS understasnd
-      final finalBgraMat = cv.cvtColor(grayMat, cv.COLOR_GRAY2BGRA);
+      final finalBgraMat = cv.cvtColor(enhancedGray, cv.COLOR_GRAY2BGRA);
 
-      return finalBgraMat.data; // Temporary return so it compiles
+      return (finalBgraMat.data,blurScore); // Temporary return so it compiles
     }
   }
 }
@@ -58,7 +70,11 @@ class OCRProcess{
   //creating a method for scanLabel operations
   Future<RecognizedText> scanLabel(Uint8List rawBytes,int width,int height,bool isAndroid, int sensorOrientation) async {
     //initlizing a variable with the cleaned image
-    Uint8List cleanBytes = _processor.Imageprocess(rawBytes,width,height,isAndroid);
+    final (cleanBytes,blurScore) = _processor.Imageprocess(rawBytes,width,height,isAndroid);
+
+    if (blurScore < 100.0){
+        throw Exception("BLURRY_FRAME");  //Exception is thrown when blurry image is detected
+    }
 
     final rotation = InputImageRotationValue.fromRawValue(sensorOrientation) ?? InputImageRotation.rotation0deg; //basically rotation of your camera
     //inputing data into ML.
