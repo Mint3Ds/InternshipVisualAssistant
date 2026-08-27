@@ -4,17 +4,19 @@ publish_to: 'none'
 version: 0.1.0+1
 
 environment:
-  sdk: ^3.12.2
+  sdk: '^3.13.0'
 
 dependencies:
   flutter:
     sdk: flutter
+
   google_mlkit_text_recognition: ^0.16.0
   opencv_dart: ^2.2.1+4
   camera: ^0.12.0+2
   gal: ^2.3.2
   sqflite: ^2.4.3
   path: ^1.9.1
+  flutter_tts: ^4.2.5
 
 dev_dependencies:
   flutter_test:
