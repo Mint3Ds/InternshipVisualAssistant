@@ -17,9 +17,8 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
-  // ============================================================
-  // CAMERA
-  // ============================================================
+
+  // camera
 
   List<CameraDescription> cameras = [];
   CameraController? cameraController;
@@ -29,9 +28,9 @@ class _HomePageState extends State<HomePage> {
   bool _cameraReady = false;
   bool _cameraError = false;
 
-  // ============================================================
-  // SERVICES
-  // ============================================================
+
+  // Services
+
 
   final OCRProcess _ocrService = OCRProcess();
   final DatabaseService _dbService = DatabaseService();
@@ -39,9 +38,9 @@ class _HomePageState extends State<HomePage> {
 
   final FlutterTts _tts = FlutterTts();
 
-  // ============================================================
-  // UI STATE
-  // ============================================================
+
+  // ui state
+
 
   String _scanResult = "Ready to scan";
 
@@ -51,9 +50,9 @@ class _HomePageState extends State<HomePage> {
   String _instructionMessage =
       "Point the camera at the medicine label.";
 
-  // ============================================================
-  // LIFECYCLE
-  // ============================================================
+
+  // lifecycle
+
 
   @override
   void initState() {
@@ -77,9 +76,9 @@ class _HomePageState extends State<HomePage> {
     super.dispose();
   }
 
-  // ============================================================
-  // TEXT TO SPEECH
-  // ============================================================
+
+  // text to speech
+
 
   Future<void> _setupTts() async {
     try {
@@ -120,9 +119,8 @@ class _HomePageState extends State<HomePage> {
     }
   }
 
-  // ============================================================
-  // MAIN UI
-  // ============================================================
+
+  // main ui
 
   @override
   Widget build(BuildContext context) {
@@ -132,29 +130,26 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // ============================================================
+
   // UI
-  // ============================================================
+
 
   Widget _buildUI() {
-    // ----------------------------------------------------------
-    // CAMERA LOADING
-    // ----------------------------------------------------------
+
+    // Camera loading
+
 
     if (!_cameraReady) {
       return _buildCameraLoadingScreen();
     }
 
-    // ----------------------------------------------------------
-    // CAMERA READY
-    // ----------------------------------------------------------
+   //camera ready
 
     return SafeArea(
       child: Column(
         children: [
-          // ======================================================
-          // HEADER
-          // ======================================================
+
+         //Header
 
           Padding(
             padding: const EdgeInsets.fromLTRB(
@@ -179,9 +174,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // ======================================================
-          // STATUS
-          // ======================================================
+       //status
 
           Expanded(
             flex: 2,
@@ -235,9 +228,7 @@ class _HomePageState extends State<HomePage> {
                             ),
                           ),
 
-                          // ------------------------------------------------
-                          // RESULT
-                          // ------------------------------------------------
+                          //result
 
                           if (!_isScanning &&
                               _scanResult != "Ready to scan") ...[
@@ -287,9 +278,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // ======================================================
-          // CAMERA
-          // ======================================================
+        //camera
 
           Expanded(
             flex: 5,
@@ -341,9 +330,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // ======================================================
-          // INSTRUCTION
-          // ======================================================
+          //instructions
 
           Padding(
             padding: const EdgeInsets.fromLTRB(
@@ -368,9 +355,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // ======================================================
-          // SCAN BUTTON
-          // ======================================================
+         //scan
 
           Padding(
             padding: const EdgeInsets.fromLTRB(
@@ -432,16 +417,14 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // ======================================================
-          // TEST AUDIO BUTTON
-          // ======================================================
+     //test audio button
           //
           // TEMPORARY:
           // Use this to check whether flutter_tts itself
-          // works on the emulator / phone.
+          // works on the emulator
           //
           // Remove this button when testing is complete.
-          // ======================================================
+
 
           Padding(
             padding: const EdgeInsets.symmetric(
@@ -493,9 +476,7 @@ class _HomePageState extends State<HomePage> {
             ),
           ),
 
-          // ======================================================
-          // SCAN ANOTHER
-          // ======================================================
+          //scan another
 
           if (!_isScanning &&
               _scanResult != "Ready to scan")
@@ -534,10 +515,7 @@ class _HomePageState extends State<HomePage> {
       ),
     );
   }
-
-  // ============================================================
-  // CAMERA LOADING SCREEN
-  // ============================================================
+//camera loading
 
   Widget _buildCameraLoadingScreen() {
     return Scaffold(
@@ -638,9 +616,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // ============================================================
-  // START SCAN
-  // ============================================================
+//start scan
 
   Future<void> _startScan() async {
     if (_isScanning) {
@@ -669,25 +645,18 @@ class _HomePageState extends State<HomePage> {
           "Hold the camera steady.";
     });
 
-    // ----------------------------------------------------------
-    // HAPTIC START FEEDBACK
-    // ----------------------------------------------------------
+//haptic start feedback
 
     await HapticFeedback.mediumImpact();
 
-    // ----------------------------------------------------------
-    // AUDIO START FEEDBACK
-    // ----------------------------------------------------------
+  //audio start feedback
 
     await _speak(
       "Scanning the medicine label. "
       "Please hold the camera still.",
     );
   }
-
-  // ============================================================
-  // RESET FOR NEW SCAN
-  // ============================================================
+//reset for new scan
 
   Future<void> _resetForNewScan() async {
     if (_isScanning) {
@@ -714,9 +683,7 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // ============================================================
-  // CAMERA SETUP
-  // ============================================================
+//camera set up
 
   Future<void> _setupCameraController() async {
     try {
@@ -741,15 +708,10 @@ class _HomePageState extends State<HomePage> {
         return;
       }
 
-      // --------------------------------------------------------
-      // DISPOSE OLD CONTROLLER IF RETRYING
-      // --------------------------------------------------------
-
+    //dispose old controller if trying
       await cameraController?.dispose();
 
-      // --------------------------------------------------------
-      // CREATE CAMERA CONTROLLER
-      // --------------------------------------------------------
+//create camera controller
 
       final CameraController controller =
           CameraController(
@@ -764,10 +726,7 @@ class _HomePageState extends State<HomePage> {
       cameraController = controller;
 
       cameras = available;
-
-      // --------------------------------------------------------
-      // INITIALISE CAMERA
-      // --------------------------------------------------------
+//initialise camera
 
       await controller.initialize();
 
@@ -775,9 +734,7 @@ class _HomePageState extends State<HomePage> {
         return;
       }
 
-      // --------------------------------------------------------
-      // AUTO FOCUS
-      // --------------------------------------------------------
+     //auto focus
 
       try {
         await controller.setFocusMode(
@@ -789,39 +746,29 @@ class _HomePageState extends State<HomePage> {
         );
       }
 
-      // --------------------------------------------------------
-      // CAMERA READY
-      // --------------------------------------------------------
+     //camera ready
 
       setState(() {
         _cameraReady = true;
         _cameraError = false;
       });
 
-      // --------------------------------------------------------
-      // IMAGE STREAM
-      // --------------------------------------------------------
+   //image stream
 
       await controller.startImageStream(
         (CameraImage image) async {
-          // ------------------------------------------------------
-          // WAIT FOR USER TO PRESS SCAN
-          // ------------------------------------------------------
+         //wait for user to click scan
 
           if (!_captureNextFrame) {
             return;
           }
 
-          // ------------------------------------------------------
-          // PREVENT MULTIPLE FRAMES
-          // ------------------------------------------------------
+          //prevent multiple frames
 
           _captureNextFrame = false;
 
           try {
-            // ==================================================
-            // CONVERT CAMERA IMAGE TO BYTES
-            // ==================================================
+          //convert camera image to bytes
 
             final WriteBuffer allBytes =
                 WriteBuffer();
@@ -842,10 +789,7 @@ class _HomePageState extends State<HomePage> {
                 controller
                     .description
                     .sensorOrientation;
-
-            // ==================================================
-            // OCR
-            // ==================================================
+//ocr
 
             final RecognizedText result =
                 await _ocrService.scanLabel(
@@ -859,18 +803,14 @@ class _HomePageState extends State<HomePage> {
             final String detectedText =
                 result.text.trim();
 
-            // ==================================================
-            // MEDICINE TITLE EXTRACTION
-            // ==================================================
+         //med title extraction
 
             final String medicineTitle =
                 _titleExtract
                     .extractTitle(result)
                     .trim();
 
-            // ==================================================
-            // DATABASE
-            // ==================================================
+        //database
 
             if (medicineTitle.isNotEmpty) {
               final newScan = ScannedLabels(
@@ -887,9 +827,7 @@ class _HomePageState extends State<HomePage> {
                 "Successfully saved to database!",
               );
 
-              // ------------------------------------------------
-              // DEBUG DATABASE OUTPUT
-              // ------------------------------------------------
+             //debug database
 
               final savedLabels =
                   await _dbService.outPutLabels(
@@ -913,9 +851,7 @@ class _HomePageState extends State<HomePage> {
               );
             }
 
-            // ==================================================
-            // SUCCESS UI
-            // ==================================================
+        //UI
 
             if (!mounted) {
               return;
@@ -956,15 +892,11 @@ class _HomePageState extends State<HomePage> {
               }
             });
 
-            // ==================================================
-            // SUCCESS HAPTIC
-            // ==================================================
+           //working haptic
 
             await HapticFeedback.heavyImpact();
 
-            // ==================================================
-            // ACCESSIBLE VOICE RESULT
-            // ==================================================
+       //accessible voice result
 
             if (medicineTitle.isNotEmpty) {
               await _speak(
@@ -998,9 +930,7 @@ class _HomePageState extends State<HomePage> {
               );
             }
           } catch (e) {
-            // ==================================================
-            // ERROR HANDLING
-            // ==================================================
+           //error handling
 
             debugPrint(
               "Scan error: $e",
@@ -1066,9 +996,7 @@ class _HomePageState extends State<HomePage> {
         },
       );
     } catch (e) {
-      // ========================================================
-      // CAMERA INITIALIZATION ERROR
-      // ========================================================
+    //camera initialization error
 
       debugPrint(
         "Camera initialization error: $e",
