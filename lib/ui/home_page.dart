@@ -1,13 +1,21 @@
-import 'dart:io';
-
-import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:flutter_tts/flutter_tts.dart';
-import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart';
+import 'package:camera/camera.dart';
+import '../core/camera_scanning.dart';
 
-import '../core/database.dart';
-import '../core/image_processor_service.dart';
+class AccessibilitySettings {
+  bool voiceGuidance;
+  bool largeText;
+  bool highContrast;
+  bool hapticFeedback;
+
+  AccessibilitySettings({
+    this.voiceGuidance = false,
+    this.largeText = true,
+    this.highContrast = false,
+    this.hapticFeedback = true,
+  });
+}
 
 class HomePage extends StatefulWidget {
   const HomePage({super.key});
@@ -17,1012 +25,1056 @@ class HomePage extends StatefulWidget {
 }
 
 class _HomePageState extends State<HomePage> {
+  late ScannerController _scanner;
 
-  // camera
-
-  List<CameraDescription> cameras = [];
-  CameraController? cameraController;
-
-  bool _captureNextFrame = false;
-  bool _isScanning = false;
-  bool _cameraReady = false;
-  bool _cameraError = false;
-
-
-  // Services
-
-
-  final OCRProcess _ocrService = OCRProcess();
-  final DatabaseService _dbService = DatabaseService();
-  final TitleExtraction _titleExtract = TitleExtraction();
-
-  final FlutterTts _tts = FlutterTts();
-
-
-  // ui state
-
-
-  String _scanResult = "Ready to scan";
+  final AccessibilitySettings _accessibility =
+  AccessibilitySettings();
 
   String _statusMessage =
-      "Point the camera at the medicine label, then press Scan Medicine.";
+      "Point the camera at a medication label to scan.";
 
-  String _instructionMessage =
-      "Point the camera at the medicine label.";
-
-
-  // lifecycle
-
+  bool _cameraInitialized = false;
+  DebugFrameInfo? _debugFrame;
 
   @override
   void initState() {
     super.initState();
 
-    _initializeApp();
-  }
+    _scanner = ScannerController(
+      onStatusUpdated: (message) {
+        if (!mounted) return;
 
-  Future<void> _initializeApp() async {
-    // Set up TTS first.
-    await _setupTts();
+        setState(() {
+          _statusMessage = message;
+        });
+      },
+      onWarningTriggered: (medTitle) {
+        if (!mounted) return;
+        _showDuplicateWarning(medTitle);
+      },
+      onCameraInitialized: () {
+        if (!mounted) return;
 
-    // Then start the camera.
-    await _setupCameraController();
+        setState(() {
+          _cameraInitialized = true;
+        });
+      },
+      onDebugFrame: (frame) {
+        if (!mounted) return;
+
+        setState(() {
+          _debugFrame = frame;
+        });
+        if (frame != null) {
+          _handleHapticPositionFeedback(frame);
+        }
+      },
+    );
+
+    _scanner.initializeCamera();
   }
 
   @override
   void dispose() {
-    cameraController?.dispose();
-    _tts.stop();
+    _scanner.dispose();
     super.dispose();
   }
 
+  // haptic feedback
+  // - medium vibration when positioned correctly
+  // - light vibration when not positioned correctly
+  //
+  // The accessibility switch controls whether these vibrations happen.
+  void _handleHapticPositionFeedback(DebugFrameInfo frame) {
+    if (!_accessibility.hapticFeedback) return;
 
-  // text to speech
+    if (frame.isWellPositioned) {
+      HapticFeedback.mediumImpact();
+    } else {
+      HapticFeedback.lightImpact();
+    }
+  }
 
+  void _buttonHaptic() {
+    if (_accessibility.hapticFeedback) {
+      HapticFeedback.mediumImpact();
+    }
+  }
 
-  Future<void> _setupTts() async {
-    try {
-      await _tts.setLanguage("en-US");
+  // Accessibility theme
+  ThemeData _buildAccessibleTheme(BuildContext context) {
+    final textScale =
+    _accessibility.largeText ? 1.25 : 1.0;
 
-      await _tts.setSpeechRate(0.45);
+    if (_accessibility.highContrast) {
+      return Theme.of(context).copyWith(
+        brightness: Brightness.dark,
+        scaffoldBackgroundColor: Colors.black,
 
-      await _tts.setVolume(1.0);
+        colorScheme: const ColorScheme.dark(
+          primary: Colors.white,
+          onPrimary: Colors.black,
+          secondary: Colors.yellow,
+          onSecondary: Colors.black,
+          surface: Colors.black,
+          onSurface: Colors.white,
+          error: Colors.yellow,
+          onError: Colors.black,
+        ),
 
-      await _tts.setPitch(1.0);
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Colors.black,
+          foregroundColor: Colors.white,
+          elevation: 0,
+        ),
 
-      // Give the TTS engine a moment to initialise.
-      await Future.delayed(
-        const Duration(milliseconds: 1000),
+        cardTheme: const CardThemeData(
+          color: Colors.black,
+          surfaceTintColor: Colors.transparent,
+          elevation: 0,
+          margin: EdgeInsets.only(bottom: 12),
+          shape: RoundedRectangleBorder(
+            side: BorderSide(
+              color: Colors.white,
+              width: 2,
+            ),
+            borderRadius: BorderRadius.all(
+              Radius.circular(16),
+            ),
+          ),
+        ),
+
+        switchTheme: SwitchThemeData(
+          thumbColor:
+          WidgetStateProperty.resolveWith<Color>(
+                (states) {
+              if (states.contains(WidgetState.selected)) {
+                return Colors.black;
+              }
+
+              return Colors.white;
+            },
+          ),
+          trackColor:
+          WidgetStateProperty.resolveWith<Color>(
+                (states) {
+              if (states.contains(WidgetState.selected)) {
+                return Colors.yellow;
+              }
+
+              return Colors.black;
+            },
+          ),
+          trackOutlineColor:
+          WidgetStateProperty.all(Colors.white),
+        ),
+
+        textTheme: Theme.of(context)
+            .textTheme
+            .apply(
+          bodyColor: Colors.white,
+          displayColor: Colors.white,
+        ),
+
+        elevatedButtonTheme:
+        ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.white,
+            foregroundColor: Colors.black,
+            minimumSize:
+            const Size(double.infinity, 76),
+            side: const BorderSide(
+              color: Colors.white,
+              width: 3,
+            ),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(14),
+            ),
+            textStyle: TextStyle(
+              fontSize: 20 * textScale,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+        ),
+
+        iconButtonTheme: IconButtonThemeData(
+          style: IconButton.styleFrom(
+            foregroundColor: Colors.white,
+          ),
+        ),
+
+        dividerTheme: const DividerThemeData(
+          color: Colors.white,
+          thickness: 2,
+        ),
       );
-
-      if (!mounted) return;
-
-      await _speak(
-        "Medicine scanner ready. "
-        "Point the camera at the medicine label. "
-        "When the label is in view, press the Scan Medicine button.",
-      );
-    } catch (e) {
-      debugPrint("TTS setup error: $e");
-    }
-  }
-
-  Future<void> _speak(String message) async {
-    try {
-      debugPrint("TTS speaking: $message");
-
-      await _tts.stop();
-
-      await _tts.speak(message);
-    } catch (e) {
-      debugPrint("TTS error: $e");
-    }
-  }
-
-
-  // main ui
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: _buildUI(),
-    );
-  }
-
-
-  // UI
-
-
-  Widget _buildUI() {
-
-    // Camera loading
-
-
-    if (!_cameraReady) {
-      return _buildCameraLoadingScreen();
     }
 
-   //camera ready
+    return Theme.of(context).copyWith(
+      brightness: Brightness.light,
+      scaffoldBackgroundColor:
+      const Color(0xFFF5F5F5),
 
-    return SafeArea(
-      child: Column(
-        children: [
-
-         //Header
-
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-              20,
-              18,
-              20,
-              8,
-            ),
-            child: Semantics(
-              header: true,
-              label: "Medicine Scanner",
-              child: const Text(
-                "MEDICINE SCANNER",
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  color: Colors.white,
-                  fontSize: 30,
-                  fontWeight: FontWeight.bold,
-                  letterSpacing: 1.2,
-                ),
-              ),
-            ),
-          ),
-
-       //status
-
-          Expanded(
-            flex: 2,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 20,
-                vertical: 8,
-              ),
-              child: Semantics(
-                liveRegion: true,
-                container: true,
-                label: _statusMessage,
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(20),
-                  decoration: BoxDecoration(
-                    color: Colors.grey.shade900,
-                    border: Border.all(
-                      color: Colors.white,
-                      width: 2,
-                    ),
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  child: Center(
-                    child: SingleChildScrollView(
-                      child: Column(
-                        mainAxisAlignment:
-                            MainAxisAlignment.center,
-                        children: [
-                          // Decorative icon.
-                          ExcludeSemantics(
-                            child: Icon(
-                              _isScanning
-                                  ? Icons.hourglass_top
-                                  : Icons.accessibility_new,
-                              color: Colors.white,
-                              size: 42,
-                            ),
-                          ),
-
-                          const SizedBox(height: 12),
-
-                          Text(
-                            _statusMessage,
-                            textAlign: TextAlign.center,
-                            style: const TextStyle(
-                              color: Colors.white,
-                              fontSize: 23,
-                              fontWeight: FontWeight.bold,
-                              height: 1.4,
-                            ),
-                          ),
-
-                          //result
-
-                          if (!_isScanning &&
-                              _scanResult != "Ready to scan") ...[
-                            const SizedBox(height: 16),
-
-                            const Divider(
-                              color: Colors.white,
-                              thickness: 1,
-                            ),
-
-                            const SizedBox(height: 12),
-
-                            const Text(
-                              "SCAN RESULT",
-                              textAlign: TextAlign.center,
-                              style: TextStyle(
-                                color: Colors.white,
-                                fontSize: 18,
-                                fontWeight: FontWeight.bold,
-                                letterSpacing: 1,
-                              ),
-                            ),
-
-                            const SizedBox(height: 8),
-
-                            Semantics(
-                              label:
-                                  "Detected text: $_scanResult",
-                              child: Text(
-                                _scanResult,
-                                textAlign: TextAlign.center,
-                                style: const TextStyle(
-                                  color: Colors.white,
-                                  fontSize: 24,
-                                  fontWeight: FontWeight.bold,
-                                  height: 1.4,
-                                ),
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-
-        //camera
-
-          Expanded(
-            flex: 5,
-            child: Padding(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 16,
-                vertical: 8,
-              ),
-              child: Semantics(
-                container: true,
-                label:
-                    "Camera preview. "
-                    "Point the camera towards the front of the medicine package. "
-                    "The camera preview is visual only.",
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(20),
-                  child: Container(
-                    width: double.infinity,
-                    decoration: BoxDecoration(
-                      border: Border.all(
-                        color: Colors.white,
-                        width: 4,
-                      ),
-                      borderRadius:
-                          BorderRadius.circular(20),
-                    ),
-                    child: FittedBox(
-                      fit: BoxFit.cover,
-                      alignment: Alignment.center,
-                      child: SizedBox(
-                        width: cameraController!
-                                .value
-                                .previewSize
-                                ?.height ??
-                            1,
-                        height: cameraController!
-                                .value
-                                .previewSize
-                                ?.width ??
-                            1,
-                        child: CameraPreview(
-                          cameraController!,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-
-          //instructions
-
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-              20,
-              10,
-              20,
-              8,
-            ),
-            child: Semantics(
-              liveRegion: true,
-              label: _instructionMessage,
-              child: Text(
-                _instructionMessage,
-                textAlign: TextAlign.center,
-                style: const TextStyle(
-                  color: Colors.white,
-                  fontSize: 21,
-                  fontWeight: FontWeight.bold,
-                  height: 1.35,
-                ),
-              ),
-            ),
-          ),
-
-         //scan
-
-          Padding(
-            padding: const EdgeInsets.fromLTRB(
-              24,
-              8,
-              24,
-              10,
-            ),
-            child: SizedBox(
-              width: double.infinity,
-              height: 86,
-              child: Semantics(
-                button: true,
-                enabled: !_isScanning,
-                label: _isScanning
-                    ? "Scanning medicine"
-                    : "Scan medicine",
-                hint: _isScanning
-                    ? "Scanning is in progress. Please wait."
-                    : "Double tap to scan the medicine label.",
-                child: ElevatedButton.icon(
-                  onPressed:
-                      _isScanning ? null : _startScan,
-                  icon: ExcludeSemantics(
-                    child: Icon(
-                      _isScanning
-                          ? Icons.hourglass_top
-                          : Icons.camera_alt,
-                      size: 36,
-                    ),
-                  ),
-                  label: Text(
-                    _isScanning
-                        ? "SCANNING..."
-                        : "SCAN MEDICINE",
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.white,
-                    foregroundColor: Colors.black,
-                    disabledBackgroundColor:
-                        Colors.grey.shade700,
-                    disabledForegroundColor:
-                        Colors.white,
-                    elevation: 6,
-                    minimumSize:
-                        const Size(double.infinity, 86),
-                    shape: RoundedRectangleBorder(
-                      borderRadius:
-                          BorderRadius.circular(18),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-
-     //test audio button
-          //
-          // TEMPORARY:
-          // Use this to check whether flutter_tts itself
-          // works on the emulator
-          //
-          // Remove this button when testing is complete.
-
-
-          Padding(
-            padding: const EdgeInsets.symmetric(
-              horizontal: 24,
-              vertical: 4,
-            ),
-            child: SizedBox(
-              width: double.infinity,
-              height: 60,
-              child: Semantics(
-                button: true,
-                label: "Test audio",
-                hint:
-                    "Double tap to test text to speech.",
-                child: OutlinedButton.icon(
-                  onPressed: () async {
-                    await _speak(
-                      "Hello. "
-                      "This is a text to speech test. "
-                      "The medicine scanner audio is working.",
-                    );
-                  },
-                  icon: const Icon(
-                    Icons.volume_up,
-                    size: 28,
-                  ),
-                  label: const Text(
-                    "TEST AUDIO",
-                    style: TextStyle(
-                      fontSize: 19,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: Colors.white,
-                    side: const BorderSide(
-                      color: Colors.white,
-                      width: 2,
-                    ),
-                    minimumSize:
-                        const Size(double.infinity, 60),
-                    shape: RoundedRectangleBorder(
-                      borderRadius:
-                          BorderRadius.circular(14),
-                    ),
-                  ),
-                ),
-              ),
-            ),
-          ),
-
-          //scan another
-
-          if (!_isScanning &&
-              _scanResult != "Ready to scan")
-            Padding(
-              padding: const EdgeInsets.only(
-                top: 4,
-                bottom: 12,
-              ),
-              child: Semantics(
-                button: true,
-                label: "Scan another medicine",
-                hint:
-                    "Double tap to start another scan.",
-                child: TextButton(
-                  onPressed: _resetForNewScan,
-                  style: TextButton.styleFrom(
-                    minimumSize:
-                        const Size(220, 48),
-                    foregroundColor: Colors.white,
-                  ),
-                  child: const Text(
-                    "SCAN ANOTHER MEDICINE",
-                    style: TextStyle(
-                      fontSize: 18,
-                      fontWeight: FontWeight.bold,
-                      decoration:
-                          TextDecoration.underline,
-                    ),
-                  ),
-                ),
-              ),
-            )
-          else
-            const SizedBox(height: 12),
-        ],
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: Colors.indigo,
+        brightness: Brightness.light,
       ),
-    );
-  }
-//camera loading
 
-  Widget _buildCameraLoadingScreen() {
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: SafeArea(
-        child: Center(
-          child: Semantics(
-            liveRegion: true,
-            label: _cameraError
-                ? "Unable to start the camera."
-                : "Starting medicine scanner camera.",
-            child: Padding(
-              padding: const EdgeInsets.all(32),
-              child: Column(
-                mainAxisAlignment:
-                    MainAxisAlignment.center,
-                children: [
-                  if (!_cameraError)
-                    const SizedBox(
-                      width: 65,
-                      height: 65,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 5,
-                      ),
-                    )
-                  else
-                    const ExcludeSemantics(
-                      child: Icon(
-                        Icons.camera_alt,
-                        color: Colors.white,
-                        size: 65,
-                      ),
-                    ),
-
-                  const SizedBox(height: 30),
-
-                  Text(
-                    _cameraError
-                        ? "Unable to start camera"
-                        : "Starting camera...",
-                    textAlign: TextAlign.center,
-                    style: const TextStyle(
-                      color: Colors.white,
-                      fontSize: 28,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ),
-
-                  if (_cameraError) ...[
-                    const SizedBox(height: 16),
-
-                    const Text(
-                      "Please check camera permissions "
-                      "and try again.",
-                      textAlign: TextAlign.center,
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 20,
-                        height: 1.4,
-                      ),
-                    ),
-
-                    const SizedBox(height: 24),
-
-                    Semantics(
-                      button: true,
-                      label: "Retry camera",
-                      hint:
-                          "Double tap to try starting the camera again.",
-                      child: ElevatedButton(
-                        onPressed:
-                            _setupCameraController,
-                        style:
-                            ElevatedButton.styleFrom(
-                          backgroundColor: Colors.white,
-                          foregroundColor: Colors.black,
-                          minimumSize:
-                              const Size(220, 60),
-                        ),
-                        child: const Text(
-                          "RETRY",
-                          style: TextStyle(
-                            fontSize: 20,
-                            fontWeight:
-                                FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
-            ),
+      elevatedButtonTheme:
+      ElevatedButtonThemeData(
+        style: ElevatedButton.styleFrom(
+          minimumSize:
+          const Size(double.infinity, 76),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+          textStyle: TextStyle(
+            fontSize: 20 * textScale,
+            fontWeight: FontWeight.bold,
           ),
         ),
       ),
     );
   }
 
-//start scan
+  // Build
+  @override
+  Widget build(BuildContext context) {
+    final textScale =
+    _accessibility.largeText ? 1.25 : 1.0;
 
-  Future<void> _startScan() async {
-    if (_isScanning) {
-      return;
-    }
-
-    if (cameraController == null ||
-        !cameraController!.value.isInitialized) {
-      await _speak(
-        "The camera is not ready. "
-        "Please wait and try again.",
-      );
-      return;
-    }
-
-    setState(() {
-      _isScanning = true;
-      _captureNextFrame = true;
-
-      _scanResult = "Scanning...";
-
-      _statusMessage =
-          "Scanning the medicine label. Please hold still.";
-
-      _instructionMessage =
-          "Hold the camera steady.";
-    });
-
-//haptic start feedback
-
-    await HapticFeedback.mediumImpact();
-
-  //audio start feedback
-
-    await _speak(
-      "Scanning the medicine label. "
-      "Please hold the camera still.",
-    );
-  }
-//reset for new scan
-
-  Future<void> _resetForNewScan() async {
-    if (_isScanning) {
-      return;
-    }
-
-    setState(() {
-      _scanResult = "Ready to scan";
-
-      _statusMessage =
-          "Point the camera at the medicine label, "
-          "then press Scan Medicine.";
-
-      _instructionMessage =
-          "Point the camera at the medicine label.";
-    });
-
-    await HapticFeedback.selectionClick();
-
-    await _speak(
-      "Ready to scan. "
-      "Point the camera at the medicine label, "
-      "then press Scan Medicine.",
+    return MediaQuery(
+      data: MediaQuery.of(context).copyWith(
+        textScaler:
+        TextScaler.linear(textScale),
+      ),
+      child: Theme(
+        data: _buildAccessibleTheme(context),
+        child: Scaffold(
+          backgroundColor:
+          _accessibility.highContrast
+              ? Colors.black
+              : const Color(0xFFF5F5F5),
+          appBar: _buildAppBar(),
+          body: _buildUI(),
+        ),
+      ),
     );
   }
 
-//camera set up
+  // app bar
+  PreferredSizeWidget _buildAppBar() {
+    return AppBar(
+      title: Semantics(
+        header: true,
+        child: const Text(
+          "Medication Scanner",
+          style: TextStyle(
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
+      actions: [
+        Semantics(
+          button: true,
+          label: "Accessibility settings",
+          hint: "Open accessibility settings",
+          child: IconButton(
+            icon: const Icon(
+              Icons.accessibility_new,
+              size: 30,
+            ),
+            tooltip: "Accessibility settings",
+            onPressed: () {
+              _buttonHaptic();
+              _showAccessibilitySettings();
+            },
+          ),
+        ),
+      ],
+    );
+  }
 
-  Future<void> _setupCameraController() async {
-    try {
-      final List<CameraDescription> available =
-          await availableCameras();
+  // main ui
+  Widget _buildUI() {
+    final highContrast =
+        _accessibility.highContrast;
 
-      if (available.isEmpty) {
-        if (mounted) {
-          setState(() {
-            _cameraError = true;
-            _cameraReady = false;
+    final pageBackground =
+    highContrast
+        ? Colors.black
+        : const Color(0xFFF5F5F5);
 
-            _statusMessage =
-                "No camera was found on this device.";
-          });
-        }
+    final primaryText =
+    highContrast
+        ? Colors.white
+        : Colors.black;
 
-        await _speak(
-          "No camera was found on this device.",
-        );
+    final statusBackground =
+    highContrast
+        ? Colors.black
+        : Colors.white;
 
-        return;
-      }
+    final borderColor =
+    highContrast
+        ? Colors.white
+        : Colors.black;
 
-    //dispose old controller if trying
-      await cameraController?.dispose();
+    return Container(
+      color: pageBackground,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            children: [
 
-//create camera controller
+              // status card
 
-      final CameraController controller =
-          CameraController(
-        available.first,
-        ResolutionPreset.max,
-        enableAudio: false,
-        imageFormatGroup: Platform.isAndroid
-            ? ImageFormatGroup.yuv420
-            : ImageFormatGroup.bgra8888,
-      );
+              Semantics(
+                liveRegion: true,
+                label: "Scanner status",
+                value: _statusMessage,
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.all(16),
+                  margin:
+                  const EdgeInsets.only(bottom: 12),
+                  decoration: BoxDecoration(
+                    color: statusBackground,
+                    borderRadius:
+                    BorderRadius.circular(16),
+                    border: Border.all(
+                      color: borderColor,
+                      width: highContrast ? 3 : 1,
+                    ),
+                  ),
+                  child: Text(
+                    _statusMessage,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: primaryText,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                      height: 1.4,
+                    ),
+                  ),
+                ),
+              ),
 
-      cameraController = controller;
+              // Camera
+              Expanded(
+                child: Container(
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: Colors.black,
+                    borderRadius:
+                    BorderRadius.circular(16),
+                    border: Border.all(
+                      color: highContrast
+                          ? Colors.white
+                          : Colors.black,
+                      width: highContrast ? 4 : 2,
+                    ),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: _cameraInitialized &&
+                      _scanner.cameraController !=
+                          null &&
+                      _scanner.cameraController!
+                          .value
+                          .isInitialized
+                      ? Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      CameraPreview(
+                        _scanner.cameraController!,
+                      ),
 
-      cameras = available;
-//initialise camera
+                      // OCR bounding boxes
+                      if (_debugFrame != null)
+                        CustomPaint(
+                          painter:
+                          _BoundingBoxPainter(
+                            frame: _debugFrame!,
+                            highContrast:
+                            highContrast,
+                          ),
+                        ),
 
-      await controller.initialize();
+                      // Positioning feedback
+                      if (_debugFrame != null &&
+                          _debugFrame!
+                              .feedbackMessage
+                              .isNotEmpty)
+                        Positioned(
+                          left: 12,
+                          right: 12,
+                          bottom: 12,
+                          child: Semantics(
+                            liveRegion: true,
+                            label:
+                            "Positioning feedback",
+                            value: _debugFrame!
+                                .feedbackMessage,
+                            child: Container(
+                              padding:
+                              const EdgeInsets.all(
+                                  12),
+                              decoration:
+                              BoxDecoration(
+                                color: Colors.black
+                                    .withValues(
+                                  alpha: 0.8,
+                                ),
+                                borderRadius:
+                                BorderRadius
+                                    .circular(12),
+                                border: highContrast
+                                    ? Border.all(
+                                  color:
+                                  Colors.white,
+                                  width: 2,
+                                )
+                                    : null,
+                              ),
+                              child: Text(
+                                _debugFrame!
+                                    .feedbackMessage,
+                                textAlign:
+                                TextAlign.center,
+                                style:
+                                const TextStyle(
+                                  color: Colors.white,
+                                  fontWeight:
+                                  FontWeight.bold,
+                                  fontSize: 16,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  )
+                      : Semantics(
+                    label:
+                    "Camera preview loading",
+                    child: const Center(
+                      child:
+                      CircularProgressIndicator(),
+                    ),
+                  ),
+                ),
+              ),
 
-      if (!mounted) {
-        return;
-      }
+              const SizedBox(height: 16),
 
-     //auto focus
+              // Scan button
+              Semantics(
+                button: true,
+                label: _scanner.isLiveScanningActive
+                    ? "Scan medication"
+                    : "Scan another medication",
+                hint:
+                "Double tap to scan the medication label",
+                enabled: true,
+                child: ElevatedButton.icon(
+                  icon: Icon(
+                    _scanner.isLiveScanningActive
+                        ? Icons.camera_alt
+                        : Icons.refresh,
+                    size: 28,
+                  ),
+                  label: Text(
+                    _scanner.isLiveScanningActive
+                        ? "Scan"
+                        : "Scan Again",
+                  ),
+                  onPressed: () {
+                    _buttonHaptic();
 
-      try {
-        await controller.setFocusMode(
-          FocusMode.auto,
-        );
-      } catch (e) {
-        debugPrint(
-          "Could not set autofocus: $e",
-        );
-      }
+                    if (!_scanner
+                        .isLiveScanningActive) {
+                      _scanner
+                          .resumeLiveScanning();
+                    }
 
-     //camera ready
+                    _scanner.captureNext();
+                  },
+                ),
+              ),
 
-      setState(() {
-        _cameraReady = true;
-        _cameraError = false;
-      });
+              const SizedBox(height: 12),
 
-   //image stream
+              // bottom status
 
-      await controller.startImageStream(
-        (CameraImage image) async {
-         //wait for user to click scan
+              Semantics(
+                liveRegion: true,
+                label: "Scanner instruction",
+                child: Text(
+                  _scanner.isLiveScanningActive
+                      ? "Ready to scan"
+                      : "Scan completed",
+                  textAlign: TextAlign.center,
+                  style: TextStyle(
+                    color: primaryText,
+                    fontSize: 15,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
-          if (!_captureNextFrame) {
-            return;
-          }
+  // accessibility settings
+  void _showAccessibilitySettings() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor:
+      _accessibility.highContrast
+          ? Colors.black
+          : Colors.white,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(
+          top: Radius.circular(24),
+        ),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (
+              context,
+              setModalState,
+              ) {
+            final highContrast =
+                _accessibility.highContrast;
 
-          //prevent multiple frames
+            return Theme(
+              data: _buildAccessibleTheme(context),
+              child: SafeArea(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(
+                    16,
+                    12,
+                    16,
+                    24,
+                  ),
+                  child: SingleChildScrollView(
+                    child: Column(
+                      crossAxisAlignment:
+                      CrossAxisAlignment.start,
+                      children: [
+                        // Drag handle
+                        Center(
+                          child: Container(
+                            width: 45,
+                            height: 5,
+                            decoration: BoxDecoration(
+                              color: highContrast
+                                  ? Colors.white
+                                  : Colors.grey,
+                              borderRadius:
+                              BorderRadius.circular(10),
+                            ),
+                          ),
+                        ),
 
-          _captureNextFrame = false;
+                        const SizedBox(height: 20),
 
-          try {
-          //convert camera image to bytes
+                        Text(
+                          "Accessibility Settings",
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight:
+                            FontWeight.bold,
+                            color: highContrast
+                                ? Colors.white
+                                : Colors.black,
+                          ),
+                        ),
 
-            final WriteBuffer allBytes =
-                WriteBuffer();
+                        const SizedBox(height: 6),
 
-            for (final Plane plane in image.planes) {
-              allBytes.putUint8List(
-                plane.bytes,
-              );
-            }
+                        Text(
+                          "Adjust the scanner to make it easier to use.",
+                          style: TextStyle(
+                            fontSize: 15,
+                            color: highContrast
+                                ? Colors.white
+                                : Colors.black87,
+                          ),
+                        ),
 
-            final Uint8List rawBytes =
-                allBytes.done().buffer.asUint8List();
+                        const SizedBox(height: 20),
 
-            final bool isAndroid =
-                Platform.isAndroid;
+                        // Voice guidance
+                        _buildAccessibilitySwitch(
+                          context: context,
+                          setModalState:
+                          setModalState,
+                          title: "Voice Guidance",
+                          description:
+                          "Speak important scanning instructions and results.",
+                          icon:
+                          Icons.record_voice_over,
+                          value: _accessibility
+                              .voiceGuidance,
+                          onChanged:
+                              (value) async {
+                            setModalState(() {
+                              _accessibility
+                                  .voiceGuidance = value;
+                            });
 
-            final int sensorOrientation =
-                controller
-                    .description
-                    .sensorOrientation;
-//ocr
+                            setState(() {});
 
-            final RecognizedText result =
-                await _ocrService.scanLabel(
-              rawBytes,
-              image.width,
-              image.height,
-              isAndroid,
-              sensorOrientation,
+                            await _scanner
+                                .setVoiceGuidance(
+                              value,
+                            );
+                          },
+                        ),
+
+                        // large text
+
+                        _buildAccessibilitySwitch(
+                          context: context,
+                          setModalState:
+                          setModalState,
+                          title: "Large Text",
+                          description:
+                          "Increase text size throughout the scanner.",
+                          icon: Icons.text_fields,
+                          value: _accessibility
+                              .largeText,
+                          onChanged: (value) {
+                            setModalState(() {
+                              _accessibility
+                                  .largeText = value;
+                            });
+
+                            setState(() {});
+                          },
+                        ),
+
+                        // High contrast
+
+                        _buildAccessibilitySwitch(
+                          context: context,
+                          setModalState:
+                          setModalState,
+                          title: "High Contrast",
+                          description:
+                          "Use stronger borders, black backgrounds and bright text.",
+                          icon:
+                          Icons.contrast,
+                          value: _accessibility
+                              .highContrast,
+                          onChanged: (value) {
+                            setModalState(() {
+                              _accessibility
+                                  .highContrast = value;
+                            });
+
+                            setState(() {});
+                          },
+                        ),
+
+                        // haptic feedback
+                        _buildAccessibilitySwitch(
+                          context: context,
+                          setModalState:
+                          setModalState,
+                          title: "Haptic Feedback",
+                          description:
+                          "Use vibration to indicate important scanner states.",
+                          icon:
+                          Icons.vibration,
+                          value: _accessibility
+                              .hapticFeedback,
+                          onChanged: (value) {
+                            setModalState(() {
+                              _accessibility
+                                  .hapticFeedback = value;
+                            });
+
+                            setState(() {});
+                          },
+                        ),
+
+                        const SizedBox(height: 12),
+
+                        // =================================================================
+                        // SCREEN READER INFORMATION
+                        // =================================================================
+
+                        Container(
+                          width: double.infinity,
+                          padding:
+                          const EdgeInsets.all(16),
+                          decoration: BoxDecoration(
+                            color: highContrast
+                                ? Colors.black
+                                : const Color(
+                              0xFFF5F5F5,
+                            ),
+                            borderRadius:
+                            BorderRadius.circular(16),
+                            border: Border.all(
+                              color: highContrast
+                                  ? Colors.white
+                                  : Colors.black26,
+                              width:
+                              highContrast ? 2 : 1,
+                            ),
+                          ),
+                          child: Row(
+                            crossAxisAlignment:
+                            CrossAxisAlignment.start,
+                            children: [
+                              Icon(
+                                Icons
+                                    .accessibility_new,
+                                color: highContrast
+                                    ? Colors.white
+                                    : Colors.indigo,
+                                size: 28,
+                              ),
+
+                              const SizedBox(width: 12),
+
+                              Expanded(
+                                child: Column(
+                                  crossAxisAlignment:
+                                  CrossAxisAlignment.start,
+                                  children: [
+                                    Text(
+                                      "Screen Reader Support",
+                                      style: TextStyle(
+                                        fontWeight:
+                                        FontWeight.bold,
+                                        fontSize: 17,
+                                        color:
+                                        highContrast
+                                            ? Colors.white
+                                            : Colors.black,
+                                      ),
+                                    ),
+
+                                    const SizedBox(
+                                      height: 6,
+                                    ),
+
+                                    Text(
+                                      "This app supports VoiceOver on iOS and TalkBack on Android.",
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        color:
+                                        highContrast
+                                            ? Colors.white
+                                            : Colors.black87,
+                                        height: 1.4,
+                                      ),
+                                    ),
+
+                                    const SizedBox(
+                                      height: 8,
+                                    ),
+
+                                    Text(
+                                      "If you use VoiceOver or TalkBack, consider keeping Voice Guidance off to avoid overlapping speech.",
+                                      style: TextStyle(
+                                        fontSize: 14,
+                                        fontWeight:
+                                        FontWeight.w600,
+                                        color:
+                                        highContrast
+                                            ? Colors.yellow
+                                            : Colors.black87,
+                                        height: 1.4,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
             );
+          },
+        );
+      },
+    );
+  }
 
-            final String detectedText =
-                result.text.trim();
+  // accessibility switch
 
-         //med title extraction
+  Widget _buildAccessibilitySwitch({
+    required BuildContext context,
+    required StateSetter setModalState,
+    required String title,
+    required String description,
+    required IconData icon,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    final highContrast =
+        _accessibility.highContrast;
 
-            final String medicineTitle =
-                _titleExtract
-                    .extractTitle(result)
-                    .trim();
+    return Semantics(
+      toggled: value,
+      label:
+      "$title. ${value ? "On" : "Off"}. $description",
+      child: Container(
+        margin:
+        const EdgeInsets.only(bottom: 12),
+        decoration: BoxDecoration(
+          color: highContrast
+              ? Colors.black
+              : Colors.white,
+          borderRadius:
+          BorderRadius.circular(16),
+          border: Border.all(
+            color: highContrast
+                ? Colors.white
+                : Colors.black26,
+            width: highContrast ? 2 : 1,
+          ),
+        ),
+        child: SwitchListTile(
+          contentPadding:
+          const EdgeInsets.symmetric(
+            horizontal: 16,
+            vertical: 6,
+          ),
+          secondary: Icon(
+            icon,
+            size: 28,
+            color: highContrast
+                ? Colors.white
+                : Colors.indigo,
+          ),
+          title: Text(
+            title,
+            style: TextStyle(
+              fontWeight: FontWeight.bold,
+              fontSize: 17,
+              color: highContrast
+                  ? Colors.white
+                  : Colors.black,
+            ),
+          ),
+          subtitle: Text(
+            description,
+            style: TextStyle(
+              fontSize: 14,
+              color: highContrast
+                  ? Colors.white
+                  : Colors.black87,
+              height: 1.3,
+            ),
+          ),
+          value: value,
+          onChanged: (newValue) {
+            _buttonHaptic();
+            onChanged(newValue);
+          },
+        ),
+      ),
+    );
+  }
 
-        //database
+  void _showDuplicateWarning(String medTitle) {
+    final highContrast =
+        _accessibility.highContrast;
 
-            if (medicineTitle.isNotEmpty) {
-              final newScan = ScannedLabels(
-                text: medicineTitle,
-                times: DateTime.now()
-                    .toIso8601String(),
-              );
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) {
+        return AlertDialog(
+          backgroundColor:
+          highContrast
+              ? Colors.black
+              : Colors.white,
+          shape: RoundedRectangleBorder(
+            borderRadius:
+            BorderRadius.circular(18),
+            side: highContrast
+                ? const BorderSide(
+              color: Colors.white,
+              width: 2,
+            )
+                : BorderSide.none,
+          ),
+          title: Text(
+            "Medication Already Scanned",
+            style: TextStyle(
+              color: highContrast
+                  ? Colors.white
+                  : Colors.black,
+              fontWeight: FontWeight.bold,
+            ),
+          ),
+          content: Text(
+            "'$medTitle' was scanned recently.",
+            style: TextStyle(
+              color: highContrast
+                  ? Colors.white
+                  : Colors.black87,
+              height: 1.4,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                _buttonHaptic();
 
-              await _dbService.insertLabels(
-                newScan,
-              );
+                Navigator.of(context).pop();
 
-              debugPrint(
-                "Successfully saved to database!",
-              );
+                _scanner.resumeLiveScanning();
+              },
+              child: Text(
+                "Cancel",
+                style: TextStyle(
+                  color: highContrast
+                      ? Colors.white
+                      : Colors.indigo,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
 
-             //debug database
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor:
+                highContrast
+                    ? Colors.yellow
+                    : Colors.indigo,
+                foregroundColor:
+                highContrast
+                    ? Colors.black
+                    : Colors.white,
+              ),
+              onPressed: () {
+                _buttonHaptic();
 
-              final savedLabels =
-                  await _dbService.outPutLabels(
-                limitCount: 3,
-              );
+                Navigator.of(context).pop();
 
-              debugPrint(
-                "--- CURRENT DATABASE LOGS ---",
-              );
-
-              for (final label in savedLabels) {
-                debugPrint(
-                  "ID: ${label.id} | "
-                  "Text: ${label.text} | "
-                  "Time: ${label.times}",
+                _scanner.forceSaveLabel(
+                  medTitle,
                 );
-              }
+              },
+              child: const Text(
+                "Log Anyway",
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
 
-              debugPrint(
-                "-----------------------------",
-              );
-            }
+class _BoundingBoxPainter
+    extends CustomPainter {
+  final DebugFrameInfo frame;
+  final bool highContrast;
 
-        //UI
+  _BoundingBoxPainter({
+    required this.frame,
+    required this.highContrast,
+  });
 
-            if (!mounted) {
-              return;
-            }
+  @override
+  void paint(
+      Canvas canvas,
+      Size size,
+      ) {
+    if (frame.effectiveWidth <= 0 ||
+        frame.effectiveHeight <= 0) {
+      return;
+    }
 
-            final String displayResult =
-                detectedText.isEmpty
-                    ? "No text found."
-                    : detectedText;
+    final scaleX =
+        size.width / frame.effectiveWidth;
 
-            setState(() {
-              _isScanning = false;
+    final scaleY =
+        size.height / frame.effectiveHeight;
 
-              _scanResult = displayResult;
+    // =========================================================================
+    // OCR BLOCK BOXES
+    // =========================================================================
 
-              if (detectedText.isEmpty) {
-                _statusMessage =
-                    "No medicine text was detected.";
+    final blockPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth =
+      highContrast ? 2.5 : 1.5
+      ..color = highContrast
+          ? Colors.white
+          : Colors.yellow;
 
-                _instructionMessage =
-                    "Move the camera closer, "
-                    "make sure the label is visible, "
-                    "and try again.";
-              } else if (medicineTitle.isNotEmpty) {
-                _statusMessage =
-                    "Medicine detected.";
-
-                _instructionMessage =
-                    "The medicine name was detected. "
-                    "You can scan another medicine.";
-              } else {
-                _statusMessage =
-                    "Text detected.";
-
-                _instructionMessage =
-                    "Text was detected, but the medicine "
-                    "name could not be identified.";
-              }
-            });
-
-           //working haptic
-
-            await HapticFeedback.heavyImpact();
-
-       //accessible voice result
-
-            if (medicineTitle.isNotEmpty) {
-              await _speak(
-                "Medicine detected. "
-                "The medicine appears to be "
-                "$medicineTitle.",
-              );
-            } else if (detectedText.isNotEmpty) {
-              String speechText =
-                  detectedText.replaceAll(
-                RegExp(r'\s+'),
-                ' ',
-              );
-
-              // Limit spoken OCR result.
-              if (speechText.length > 250) {
-                speechText =
-                    speechText.substring(0, 250);
-              }
-
-              await _speak(
-                "Text detected. "
-                "$speechText",
-              );
-            } else {
-              await _speak(
-                "No medicine text was detected. "
-                "Move the camera closer, "
-                "make sure the label is visible, "
-                "and try again.",
-              );
-            }
-          } catch (e) {
-           //error handling
-
-            debugPrint(
-              "Scan error: $e",
-            );
-
-            if (!mounted) {
-              return;
-            }
-
-            final String error =
-                e.toString();
-
-            if (error.contains(
-              "BLURRY_FRAME",
-            )) {
-              setState(() {
-                _isScanning = false;
-
-                _scanResult =
-                    "Image too blurry.";
-
-                _statusMessage =
-                    "The image is too blurry.";
-
-                _instructionMessage =
-                    "Move closer to the medicine, "
-                    "hold the camera still, "
-                    "and try again.";
-              });
-
-              await HapticFeedback.vibrate();
-
-              await _speak(
-                "The image is too blurry. "
-                "Move closer to the medicine, "
-                "hold the camera still, "
-                "and try again.",
-              );
-            } else {
-              setState(() {
-                _isScanning = false;
-
-                _scanResult =
-                    "Scan failed.";
-
-                _statusMessage =
-                    "The medicine could not be scanned.";
-
-                _instructionMessage =
-                    "Please reposition the camera "
-                    "and try again.";
-              });
-
-              await HapticFeedback.vibrate();
-
-              await _speak(
-                "The medicine could not be scanned. "
-                "Please reposition the camera "
-                "and try again.",
-              );
-            }
-          }
-        },
-      );
-    } catch (e) {
-    //camera initialization error
-
-      debugPrint(
-        "Camera initialization error: $e",
+    for (final box in frame.blockBoxes) {
+      final rect = Rect.fromLTRB(
+        box.left * scaleX,
+        box.top * scaleY,
+        box.right * scaleX,
+        box.bottom * scaleY,
       );
 
-      if (!mounted) {
-        return;
-      }
-
-      setState(() {
-        _cameraReady = false;
-        _cameraError = true;
-        _isScanning = false;
-        _captureNextFrame = false;
-
-        _statusMessage =
-            "Unable to start the camera.";
-      });
-
-      await HapticFeedback.vibrate();
-
-      await _speak(
-        "Unable to start the camera. "
-        "Please check the camera permission "
-        "and try again.",
+      canvas.drawRect(
+        rect,
+        blockPaint,
       );
     }
+
+    // =========================================================================
+    // UNION BOX
+    // =========================================================================
+
+    if (frame.unionBox != null) {
+      final box = frame.unionBox!;
+
+      final rect = Rect.fromLTRB(
+        box.left * scaleX,
+        box.top * scaleY,
+        box.right * scaleX,
+        box.bottom * scaleY,
+      );
+
+      final unionPaint = Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth =
+        highContrast ? 6 : 4
+        ..color = highContrast
+            ? (frame.isWellPositioned
+            ? Colors.white
+            : Colors.yellow)
+            : (frame.isWellPositioned
+            ? Colors.green
+            : Colors.red);
+
+      canvas.drawRect(
+        rect,
+        unionPaint,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(
+      covariant _BoundingBoxPainter oldDelegate,
+      ) {
+    return oldDelegate.frame != frame ||
+        oldDelegate.highContrast !=
+            highContrast;
   }
 }

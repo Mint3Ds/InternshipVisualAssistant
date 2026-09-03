@@ -1,26 +1,45 @@
 name: flutter_application_1
 description: "A new Flutter project."
 publish_to: 'none'
+
 version: 0.1.0+1
 
 environment:
-  sdk: '^3.13.0'
+  sdk: ^3.12.2
 
 dependencies:
   flutter:
     sdk: flutter
 
-  google_mlkit_text_recognition: ^0.16.0
-  opencv_dart: ^2.2.1+4
+  # Camera
   camera: ^0.12.0+2
-  gal: ^2.3.2
+
+  # OCR
+  google_mlkit_text_recognition: ^0.17.1
+
+  # Text-to-Speech / Voice Guidance
+  flutter_tts: ^4.2.3
+
+  # Image processing
+  opencv_dart: ^2.2.2
+
+  # Save images
+  gal: ^2.3.3
+
+  # Local database
   sqflite: ^2.4.3
+
+  # File/path utilities
   path: ^1.9.1
-  flutter_tts: ^4.2.5
+
+  # Built-in Kotlin compatible plugins
+  package_info_plus: ^10.2.1
+  wakelock_plus: ^1.8.0
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
   flutter_lints: ^6.0.0
 
 flutter:
