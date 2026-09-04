@@ -1,24 +1,12 @@
 import 'package:opencv_dart/opencv_dart.dart' as cv;
 import 'dart:typed_data';
 import 'dart:io';
+import 'dart:math' show atan2, pi;
 import 'package:google_mlkit_commons/google_mlkit_commons.dart';
 import 'dart:ui'; // uses the Size feature
 import 'package:google_mlkit_text_recognition/google_mlkit_text_recognition.dart'; //uses the TextRecognizer, RecognizedText features
-//------------------------Version 1 ------------------------------------------------------------------------------
-// class ImageProcessor{
-//   Uint8List processImage(Uint8List rawImageBytes){   //catches raw bytes buffer coming from phone camera
-//     final img = cv.imdecode(rawImageBytes, cv.IMREAD_COLOR);   //imdecode receieves raw byte buffer to decode in memory. Structure raw bytes into Matrix format of 2D pixels (with colors)
-//     final gray = cv.cvtColor(img, cv.COLOR_BGR2GRAY); //takes the img and applies grayscale algo and put it in gray var.
-//     final bgraGray = cv.cvtColor(gray, cv.COLOR_GRAY2BGRA); //recoverting the grayscale image to BGRA (4 channel format) so it will be competible with andriod and IOS. The image is still grayscale
 
-
-//     // var (success, cleanBytes) = cv.imencode('.jpg', gray);   //compressing gray matrix into .jpg format
-//     return bgraGray;
-//   }
-// }
-//=======================================================================================================================
 class ImageProcessor {
-
   //accepts raw bytes and dimensions from the camera sensors and a flag to identify which os we are reading
   (Uint8List,double) Imageprocess(Uint8List rawBytes, int width, int height, bool isAndroid) {
     final cv.Mat srcMat;   //initizing var called srcMat
@@ -34,8 +22,7 @@ class ImageProcessor {
 
     final enhancedGray = cv.equalizeHist(grayMat); //flattening lighting to reduce glare
 
-    // --- THE BLUR DETECTION (Laplacian Variance) ---
-    //run the edge detection filter 
+    //blur detection (Laplacian Variance)
     final laplacian = cv.laplacian(enhancedGray, cv.MatType.CV_64F);
     
     //get the standard deviation of the edges
@@ -45,7 +32,7 @@ class ImageProcessor {
     final double blurScore = stdDev.val[0] * stdDev.val[0];
     
     if (isAndroid){       
-      Uint8List yBytes = enhancedGray.data; // The grayscale image is our Y-plane //Y are one byte per pixel. //uses this one instead of adaptive_thresh because google ML kit uses natural modern LLM
+      Uint8List yBytes = enhancedGray.data; // The grayscale image is our Y-plane. Y are one byte per pixel. Uses this one instead of adaptive_thresh because google ML kit uses natural modern LLM
       int uvSize = (width * height) ~/ 2; // NV21 UV-plane size because UV colors are one pair for every 2×2 pixels
     
       Uint8List nv21Bytes = Uint8List(yBytes.length + uvSize);   //nv21 arrary is a combination of Y scale (brightness) and UV(color)
@@ -57,18 +44,11 @@ class ImageProcessor {
     //Converting the 1-channel gray binary image back into 4-channel BGRA format to let both andriod and IOS understasnd
       final finalBgraMat = cv.cvtColor(enhancedGray, cv.COLOR_GRAY2BGRA);
 
-      return (finalBgraMat.data,blurScore); // Temporary return so it compiles
+      return (finalBgraMat.data,blurScore); // Temporary return so it compiles //need actual IOS device to be tested with.
     }
   }
 }
 
-
-// Result of checking where the detected text sits within the frame.
-// isWellPositioned == false means the caller should show `message` to the
-// user instead of trying to extract/save a title from this frame.
-// The metric fields below are null only when no text was detected at all —
-// they exist so the UI can draw the live bounding-box overlay and print the
-// raw numbers while you're tuning the thresholds in FramePositionAnalyzer.
 class PositionFeedback { 
   final bool isWellPositioned; 
   final String message; 
@@ -76,6 +56,9 @@ class PositionFeedback {
   final double? areaRatio;  
   final double? offsetXRatio; 
   final double? offsetYRatio;  
+  final List<TextBlock> consideredBlocks;
+  final double? debugRawAngle; 
+  final int? debugBucket; 
 
   const PositionFeedback( 
     this.isWellPositioned,
@@ -84,31 +67,66 @@ class PositionFeedback {
     this.areaRatio, 
     this.offsetXRatio, 
     this.offsetYRatio, 
+    this.consideredBlocks = const [], 
+    this.debugRawAngle, 
+    this.debugBucket, 
   }); 
 } 
 
+double? estReadingAngle(List<TextBlock> blocks) {
+  double sumX = 0, sumY = 0;
+  for (final TextBlock block in blocks) {
+    for (final TextLine line in block.lines) {
+      final corners = line.cornerPoints;
+      if (corners.length < 4) continue; //skips to next line if the text has less than 4 corners 
+      final double dxA = (corners[1].x - corners[0].x).toDouble();  //these calculate the movement from 1 corner to another
+      final double dyA = (corners[1].y - corners[0].y).toDouble();
+      final double dxB = (corners[2].x - corners[1].x).toDouble();
+      final double dyB = (corners[2].y - corners[1].y).toDouble();
+
+      final bool aIsLonger = (dxA * dxA + dyA * dyA) >= (dxB * dxB + dyB * dyB);    //using distance formular without the sqrt to see if "direction A" is longer
+                              sumX += aIsLonger ? dxA : dxB;                  
+                              sumY += aIsLonger ? dyA : dyB;          //compares the horizontal and vertical distance
+      } //longer text lines carries more weight in influenceing the angle
+  }
+  if (sumX == 0 && sumY == 0) return null;
+  return atan2(sumY, sumX) * 180 / pi;        //find the angle
+}
+
+int normalizedAngle(double angleDegrees) {   //normalized the angles into {0,90,180,270}
+  double normalized = angleDegrees % 360;
+  if (normalized < 0) normalized += 360;
+  return ((normalized / 90).round() % 4) * 90;
+}
+
+const double AngleCorrection = 90.0;  // *IMPORTANT* NEED TO ADJUST THIS BY MAKING IT UNIVERSAL!! 
+//currently works for samsung A54 5G
+
 class FramePositionAnalyzer { 
-  // Adjustable thresholds
-  static const double _edgeMarginRatio = 0.03; // within 3% of an edge = "cut off"
-  static const double _minAreaRatio = 0.03;    // text region < 3% of frame = too far away
-  static const double _maxAreaRatio = 0.65;    // text region > 65% of frame = too close
-  static const double _centerTolerance = 0.15; // 15% off-center before we ask for a move
+
+  static const double EDGE_MARGIN = 0.03; // within 3% of an edge = "cut off"
+  static const double MIN_AREA = 0.03;    // text region < 3% of frame = too far away
+  static const double MAX_AREA = 0.65;    // text region > 65% of frame = too close
+  static const double CENTER_TOLERANCE = 0.15; // 15% off-center before we ask for a move
 
   PositionFeedback analyze(RecognizedText recognizedText, int effectiveWidth, int effectiveHeight,) {
-    if (recognizedText.blocks.isEmpty) { 
-      return const PositionFeedback( 
-        false, 
-        "No label detected. Point the camera at the medication label.", 
-      ); 
-    } //if ML returns nothing, return false and a text
+  
+    final List<TextBlock> centralBlocks = _centralBlocks(recognizedText.blocks, effectiveWidth, effectiveHeight); 
 
-    // Union bounding box across all detected text blocks. 
+    if (centralBlocks.isEmpty) { 
+      return const PositionFeedback( 
+      false, 
+      "No label detected. Point the camera at the medication label.", 
+      ); 
+    } //if nothing central detected, return false and a text
+
+    // Union bounding box across the central text blocks only. 
     double left = double.infinity; 
     double top = double.infinity;           
     double right = double.negativeInfinity; 
     double bottom = double.negativeInfinity; 
 
-    for (final TextBlock block in recognizedText.blocks) {      // loop through all detected text boxes
+    for (final TextBlock block in centralBlocks) {      // loop through the central text boxes only
       final box = block.boundingBox;
       if (box.left < left) left = box.left.toDouble();          // checking the far left
       if (box.top < top) top = box.top.toDouble();              // checking the highest top
@@ -120,7 +138,7 @@ class FramePositionAnalyzer {
     final double boxHeight = bottom - top;  //finding the height of the box
     if (boxWidth <= 0 || boxHeight <= 0) {  // if no box is found instead only a line
       return const PositionFeedback(
-        false, 
+      false, 
         "No label detected. Point the camera at the medication label.",
       ); 
     } 
@@ -134,8 +152,8 @@ class FramePositionAnalyzer {
     final double offsetYRatio = (boxCenterY - effectiveHeight / 2) / effectiveHeight;     //same thing but for vertical distance
 
     //Is the text getting cut off by the edge of the frame? 
-    final double marginX = effectiveWidth * _edgeMarginRatio;                 //calculates the horizontal margin by using the camera frame and provided ratio
-    final double marginY = effectiveHeight * _edgeMarginRatio;                //same but for vertical margin
+    final double marginX = effectiveWidth * EDGE_MARGIN;                 //calculates the horizontal margin by using the camera frame and provided ratio
+    final double marginY = effectiveHeight * EDGE_MARGIN;                //same but for vertical margin
     final bool touchesLeft = left <= marginX;                                 //checks if the left side of the unionized text box touches marginX (to tell if its cut off)
     final bool touchesRight = right >= effectiveWidth - marginX;              //same for right side
     final bool touchesTop = top <= marginY;                                   //same for top side
@@ -147,18 +165,18 @@ class FramePositionAnalyzer {
       if (touchesRight) dirs.add("right");   
       if (touchesTop) dirs.add("up");      
       if (touchesBottom) dirs.add("down");    
-      return PositionFeedback( 
-        false, 
+      return PositionFeedback(false, 
         "Label is getting cut off. Move the camera ${dirs.join(' and ')}.",
         boundingBox: unionBox, 
         areaRatio: areaRatio, 
         offsetXRatio: offsetXRatio,
         offsetYRatio: offsetYRatio, 
+        consideredBlocks: centralBlocks, 
       ); 
     } 
 
     // checks if the text is too small or large
-    if (areaRatio < _minAreaRatio) { 
+    if (areaRatio < MIN_AREA) { 
       return PositionFeedback( 
         false, 
         "Move closer to the label.",
@@ -166,8 +184,9 @@ class FramePositionAnalyzer {
         areaRatio: areaRatio, 
         offsetXRatio: offsetXRatio, 
         offsetYRatio: offsetYRatio, 
+        consideredBlocks: centralBlocks, 
       ); 
-    }else if (areaRatio > _maxAreaRatio) {
+    }else if (areaRatio > MAX_AREA) {
       return PositionFeedback( 
         false, 
         "Move back a little.", 
@@ -175,15 +194,16 @@ class FramePositionAnalyzer {
         areaRatio: areaRatio, 
         offsetXRatio: offsetXRatio, 
         offsetYRatio: offsetYRatio, 
+        consideredBlocks: centralBlocks, 
       );
     } 
 
     //check if the text off-center
     final List<String> moveDirs = []; 
-    if (offsetXRatio.abs() > _centerTolerance) { 
+    if (offsetXRatio.abs() > CENTER_TOLERANCE) { 
       moveDirs.add(offsetXRatio > 0 ? "right" : "left"); 
     } 
-    if (offsetYRatio.abs() > _centerTolerance) { 
+    if (offsetYRatio.abs() > CENTER_TOLERANCE) { 
       moveDirs.add(offsetYRatio > 0 ? "down" : "up"); 
     } 
 
@@ -195,8 +215,42 @@ class FramePositionAnalyzer {
         areaRatio: areaRatio, 
         offsetXRatio: offsetXRatio, 
         offsetYRatio: offsetYRatio, 
+        consideredBlocks: centralBlocks, 
       ); 
     } 
+
+    //checking orentation of object
+    final double? angle = estReadingAngle(centralBlocks);
+    int? bucket;
+    if (angle != null) {
+      bucket = normalizedAngle(angle + AngleCorrection);
+      if (bucket == 180) {
+        return PositionFeedback(
+          false,
+          "Label looks upside down. Flip it around.",
+          boundingBox: unionBox,
+          areaRatio: areaRatio,
+          offsetXRatio: offsetXRatio,
+          offsetYRatio: offsetYRatio,
+          consideredBlocks: centralBlocks,
+          debugRawAngle: angle,
+          debugBucket: bucket,
+        );
+      } else if (bucket == 90 || bucket == 270) {
+        return PositionFeedback(
+          false,
+          "Label looks sideways. Rotate it so the text is upright.",
+          boundingBox: unionBox,
+          areaRatio: areaRatio,
+          offsetXRatio: offsetXRatio,
+          offsetYRatio: offsetYRatio,
+          consideredBlocks: centralBlocks,
+          debugRawAngle: angle,
+          debugBucket: bucket,
+        );
+      }
+    }
+
     //if every other checks is fine then returns well position.
     return PositionFeedback(
       true, 
@@ -205,9 +259,54 @@ class FramePositionAnalyzer {
       areaRatio: areaRatio, 
       offsetXRatio: offsetXRatio, 
       offsetYRatio: offsetYRatio, 
+      consideredBlocks: centralBlocks, 
+      debugRawAngle: angle,
+      debugBucket: bucket,
     ); 
   } 
+
+//filters center labels with out of bound background labels 
+  static const double CENTRAL_REGION_WIDTH = 0.8; 
+  static const double CENTRAL_REGION_HEIGHT = 0.8; 
+
+  List<TextBlock> _centralBlocks(List<TextBlock> blocks, int width, int height) { 
+    final double marginX = width * (1 - CENTRAL_REGION_WIDTH) / 2; 
+    final double marginY = height * (1 - CENTRAL_REGION_HEIGHT) / 2; 
+    final double left = marginX; 
+    final double right = width - marginX; 
+    final double top = marginY; 
+    final double bottom = height - marginY; 
+
+    return blocks.where((TextBlock block) { 
+      final Rect box = block.boundingBox; 
+      final double centerX = box.left + box.width / 2; 
+      final double centerY = box.top + box.height / 2; 
+      return centerX >= left && centerX <= right && centerY >= top && centerY <= bottom; 
+    }).toList(); 
+  } 
 } 
+
+
+String orderedReadingText(List<TextBlock> blocks) {
+  final List<TextLine> lines = [
+    for (final TextBlock block in blocks) ...block.lines,
+  ];
+
+  lines.sort((a, b) {
+    final Rect boxA = a.boundingBox;
+    final Rect boxB = b.boundingBox;
+    // Lines within roughly half a line-height of each other are treated as
+    // sitting on the same visual row and ordered left-to-right; otherwise
+    // order strictly top-to-bottom.
+    final double rowThreshold = (boxA.height + boxB.height) / 4;
+    if ((boxA.top - boxB.top).abs() < rowThreshold) {
+      return boxA.left.compareTo(boxB.left);
+    }
+    return boxA.top.compareTo(boxB.top);
+  });
+
+  return lines.map((TextLine line) => line.text).join('\n');
+}
 
 class OCRProcess{
   //declaring instance for image processor
@@ -219,7 +318,7 @@ class OCRProcess{
     //initlizing a variable with the cleaned image
     final (cleanBytes,blurScore) = _processor.Imageprocess(rawBytes,width,height,isAndroid);
 
-    if (blurScore < 100.0){
+    if (blurScore < 100.0){     // tuned at ResolutionPreset.max, retune if resolution changes
         throw Exception("BLURRY_FRAME");  //Exception is thrown when blurry image is detected
     }
 
@@ -269,24 +368,3 @@ class TitleExtraction {
     return medName.trim().toLowerCase();
   }
 }
-
-// //=============ACTUALLY MAIN=================================================
-// Future<void> main() async {
-//   // Point directly to the test image
-//   final inputImage = InputImage.fromFilePath('D:/Internship/flutter_application_1/img/test1.png');
-
-//   //Initialize the ML Kit engine to read latin
-//   final textRecognizer = TextRecognizer(script: TextRecognitionScript.latin); 
-
-//   //Process the image. Used await to pause the code to let the ML process data 
-//   print("Scanning image...");
-//   final RecognizedText recognizedText = await textRecognizer.processImage(inputImage);
-//   //Print the extracted text blocks
-//   for (TextBlock block in recognizedText.blocks) {
-//     print("Found text: ${block.text}");
-//   }
-
-
-//   textRecognizer.close();
-//   print("Process completed.");
-// }

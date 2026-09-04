@@ -39,6 +39,7 @@ class ScannerController {
 
   bool _captureNextFrame = false;
   String _lastScannedText = "";
+  bool _isProcessingFrame = false;
 
   final OCRProcess _ocrService = OCRProcess();
   final DatabaseService _dbService = DatabaseService();
@@ -105,10 +106,10 @@ class ScannerController {
   // SCANNING STATE
   // ================================================================
 
-  bool _liveScanningActive = true;
+  bool _liveScanning = true;
 
   bool get isLiveScanningActive =>
-      _liveScanningActive;
+      _liveScanning;
 
   final void Function(DebugFrameInfo? frame)?
   onDebugFrame;
@@ -143,21 +144,18 @@ class ScannerController {
   // ================================================================
 
   void captureNext() {
-    if (!_liveScanningActive) {
+    if (!_liveScanning) {
       return;
     }
 
     _captureNextFrame = true;
-
     _hasAnnouncedReady = false;
 
-    onStatusUpdated(
-      "Scanning...",
-    );
+    onStatusUpdated("Scanning...",);
 
     _speak(
       "Scanning medication. Please hold the medication steady.",
-    );
+      );
   }
 
   // ================================================================
@@ -165,7 +163,7 @@ class ScannerController {
   // ================================================================
 
   void resumeLiveScanning() {
-    _liveScanningActive = true;
+    _liveScanning = true;
 
     _hasAnnouncedReady = false;
 
@@ -216,29 +214,27 @@ class ScannerController {
 
       cameraController?.startImageStream(
             (CameraImage image) async {
-          final bool shouldCaptureForSave =
-              _liveScanningActive &&
-                  _captureNextFrame;
+          final bool shouldCaptureForSave = _liveScanning && _captureNextFrame;
 
-          final bool shouldAnalyzeLive =
-              _liveScanningActive &&
-                  DateTime.now().difference(
-                    _lastLiveAnalysis,
-                  ) >=
-                      _liveAnalysisInterval;
+          final bool shouldAnalyzeLive = _liveScanning && DateTime.now().difference(_lastLiveAnalysis,) >= _liveAnalysisInterval;
 
-          if (!shouldCaptureForSave &&
-              !shouldAnalyzeLive) {
+          if (!shouldCaptureForSave && !shouldAnalyzeLive) {
             return;
           }
+
+          if (_isProcessingFrame) {
+            return;
+          }
+          _isProcessingFrame = true;
+
+
 
           if (shouldCaptureForSave) {
             _captureNextFrame = false;
           }
 
           if (shouldAnalyzeLive) {
-            _lastLiveAnalysis =
-                DateTime.now();
+            _lastLiveAnalysis = DateTime.now();
           }
 
           try {
@@ -249,11 +245,8 @@ class ScannerController {
             final WriteBuffer allBytes =
             WriteBuffer();
 
-            for (final Plane plane
-            in image.planes) {
-              allBytes.putUint8List(
-                plane.bytes,
-              );
+            for (final Plane plane in image.planes) {
+              allBytes.putUint8List(plane.bytes,);
             }
 
             final Uint8List rawBytes =
@@ -301,13 +294,11 @@ class ScannerController {
                 ? image.width
                 : image.height;
 
-            final PositionFeedback
-            positionFeedback =
-            _positionAnalyzer.analyze(
-              RTresult,
-              effectiveWidth,
-              effectiveHeight,
-            );
+            final PositionFeedback positionFeedback = _positionAnalyzer.analyze(
+                                                        RTresult,
+                                                        effectiveWidth,
+                                                        effectiveHeight,
+                                                      );
 
             // ======================================================
             // DEBUG FRAME
@@ -318,9 +309,7 @@ class ScannerController {
                 DebugFrameInfo(
                   blockBoxes: RTresult
                       .blocks
-                      .map(
-                        (b) => b.boundingBox,
-                  )
+                      .map((b) => b.boundingBox,)
                       .toList(),
                   unionBox:
                   positionFeedback
@@ -352,15 +341,10 @@ class ScannerController {
             // MEDICATION NOT WELL POSITIONED
             // ======================================================
 
-            if (!positionFeedback
-                .isWellPositioned) {
-              if (shouldCaptureForSave ||
-                  _liveScanningActive) {
-                onStatusUpdated(
-                  positionFeedback.message,
-                );
+            if (!positionFeedback.isWellPositioned) {
+              if (shouldCaptureForSave || _liveScanning) {
+                onStatusUpdated(positionFeedback.message,);
               }
-
               return;
             }
 
@@ -369,9 +353,8 @@ class ScannerController {
             // ======================================================
 
             if (!shouldCaptureForSave) {
-              onStatusUpdated(
-                "${positionFeedback.message} Tap to scan.",
-              );
+              if (_captureNextFrame) return;
+              onStatusUpdated("${positionFeedback.message} Tap to scan.",);
 
               // Only say this once rather than every 400ms.
               if (!_hasAnnouncedReady) {
@@ -389,16 +372,9 @@ class ScannerController {
             // CAPTURED
             // ======================================================
 
-            _liveScanningActive = false;
-
-            final String result =
-                RTresult.text;
-
-            final String medTitle =
-            _titleExtract.extractTitle(
-              RTresult,
-            );
-
+            _liveScanning = false;
+            final String result = RTresult.text;
+            final String medTitle =_titleExtract.extractTitle(RTresult,);
             _lastScannedText = result;
 
             // ======================================================
@@ -550,6 +526,9 @@ class ScannerController {
             if (onDebugFrame != null) {
               onDebugFrame!(null);
             }
+          }
+          finally {
+            _isProcessingFrame = false; 
           }
         },
       );
