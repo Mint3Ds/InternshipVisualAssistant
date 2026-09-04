@@ -18,6 +18,8 @@ class DebugFrameInfo {
   final double? areaRatio; 
   final double? offsetXRatio; 
   final double? offsetYRatio; 
+  final double? debugRawAngle; // uncorrected estimateReadingAngle() output, for tuning kAngleCorrectionDegrees
+  final int? debugBucket; // corrected+snapped orientation bucket (0/90/180/270) actually used
 
   const DebugFrameInfo({ 
     required this.blockBoxes, 
@@ -29,6 +31,8 @@ class DebugFrameInfo {
     this.areaRatio, 
     this.offsetXRatio, 
     this.offsetYRatio, 
+    this.debugRawAngle,
+    this.debugBucket,
   }); 
 } 
 
@@ -48,7 +52,7 @@ class ScannerController {
   
   final void Function(DebugFrameInfo? frame)? onDebugFrame; //called with null to clear the overlay on a failed/blurry frame
   DateTime _lastLiveAnalysis = DateTime.fromMillisecondsSinceEpoch(0);      //initalizing to the earliest date possible
-  static const Duration _liveAnalysisInterval = Duration(milliseconds: 400); // ~2.5 analyses/sec of live guidance; can raise this if its heavy on battery
+  static const Duration _liveAnalysisInterval = Duration(milliseconds: 400); // ~2.5 analyses/sec of live guidance. raise this if its heavy on battery
 
   // Callbacks to communicate with the UI
   final Function(String) onStatusUpdated;
@@ -107,7 +111,9 @@ class ScannerController {
           if (shouldCaptureForSave) _captureNextFrame = false;      //stops capturing another frame
           if (shouldAnalyzeLive) _lastLiveAnalysis = DateTime.now();  //reset timer of last analysis
           try {
-            // --- THE MEMORY FLATTENER ---
+
+            
+            //THE MEMORY FLATTENER
             final WriteBuffer allBytes = WriteBuffer();
             for (final Plane plane in image.planes) {
               allBytes.putUint8List(plane.bytes);
@@ -117,7 +123,7 @@ class ScannerController {
             final bool isAndroid = Platform.isAndroid;
             final int sensorOrientation = cameraController!.description.sensorOrientation; //give your phone camera orientation
             
-            // --- FEED THE ENGINE ---
+            //FEED THE ENGINE
             //basically feed the scanned text stream frm camera into google ML kit and get back RTresult (RecognizedTextResults)
             final RecognizedText RTresult = await _ocrService.scanLabel(rawBytes, image.width, image.height, isAndroid,sensorOrientation);
 
@@ -129,13 +135,12 @@ class ScannerController {
             final int effectiveWidth = swapDims ? image.height : image.width; 
             final int effectiveHeight = swapDims ? image.width : image.height; 
 
-            final PositionFeedback positionFeedback = 
-                _positionAnalyzer.analyze(RTresult, effectiveWidth, effectiveHeight); 
+            final PositionFeedback positionFeedback = _positionAnalyzer.analyze(RTresult, effectiveWidth, effectiveHeight); 
 
             if (onDebugFrame != null) { 
               onDebugFrame!(DebugFrameInfo( 
-                blockBoxes: 
-                    RTresult.blocks.map((b) => b.boundingBox).toList(), 
+                blockBoxes: // only the central/considered blocks, not every raw block, so the overlay shows what the app is actually paying attention to
+                    positionFeedback.consideredBlocks.map((b) => b.boundingBox).toList(), 
                 unionBox: positionFeedback.boundingBox, 
                 effectiveWidth: effectiveWidth, 
                 effectiveHeight: effectiveHeight, 
@@ -144,25 +149,29 @@ class ScannerController {
                 areaRatio: positionFeedback.areaRatio, 
                 offsetXRatio: positionFeedback.offsetXRatio, 
                 offsetYRatio: positionFeedback.offsetYRatio, 
+                debugRawAngle: positionFeedback.debugRawAngle,
+                debugBucket: positionFeedback.debugBucket,
               )); 
             } 
 
             if (!positionFeedback.isWellPositioned) { //checks if frame is well position or not, if not then tell user how to fix
-              if (shouldCaptureForSave || _liveScanningActive) {  //this prevents a bug where "Is well position" text replaces the result text
+              if (shouldCaptureForSave || _liveScanningActive) {    //prevents "is well position" texts from overriding result text
                 onStatusUpdated(positionFeedback.message);
               }
               return;
             }
 
             if (!shouldCaptureForSave) { //tells user, is well frame and user can scan and frames get discarded and waits for new one
-              onStatusUpdated("${positionFeedback.message} Tap to scan."); 
+              if (_liveScanningActive) { // same staleness guard as above
+                onStatusUpdated("${positionFeedback.message} Tap to scan."); 
+              }
               return; 
             } 
 
             _liveScanningActive = false;  //stops live scanning flag
 
-            final String result = RTresult.text;      //covert the RTRESULT into a string format
-            final String medTitle = _titleExtract.extractTitle(RTresult);  //this one uses the RTresult to feed into titleExtract function so we can extract the biggest lines text from the scanned image
+            final String result = orderedReadingText(positionFeedback.consideredBlocks); // sorted top-to-bottom, and only from the central (non-background) blocks
+            final String medTitle = _titleExtract.extractTitle(positionFeedback.consideredBlocks);  //same central block set, so a background label's bigger font can't get picked as "the" title
             _lastScannedText = result;
 
             //Database logic
@@ -211,10 +220,12 @@ class ScannerController {
               } else {
                 onStatusUpdated("Error: $e");
               }
-            } else if (isBlurry) { 
+            } else if (isBlurry && _liveScanningActive) { // staleness guard, see above
               onStatusUpdated("Too blurry to preview. Hold steady."); 
             }
-            if (onDebugFrame != null) onDebugFrame!(null); 
+            if (onDebugFrame != null && (shouldCaptureForSave || _liveScanningActive)) {
+              onDebugFrame!(null);
+            }
           }
         });
       }

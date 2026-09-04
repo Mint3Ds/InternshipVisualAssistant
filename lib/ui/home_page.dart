@@ -1,33 +1,22 @@
 import 'package:camera/camera.dart';
 import 'package:flutter/material.dart';
 import '../core/camera_scanning.dart'; // Import the new controller
+import '../core/label_history.dart';  //lets the user view/delete saved titles
 
-// new
-// Dev/tuning switch: draws the live text bounding boxes and raw metrics on
-// top of the camera preview so you can watch how areaRatio/offsetXRatio/
-// offsetYRatio behave as you move the label around, and adjust the
-// thresholds in FramePositionAnalyzer accordingly. This is purely a visual
-// overlay toggle — ScannerController always runs the throttled live
-// analysis (that's what powers the "move closer/center it" guidance text
-// regardless of this flag), so flipping this off doesn't change OCR
-// frequency or battery use. Set to false to hide the overlay for release
-// builds while keeping the live guidance text.
-const bool kShowLiveBoundingBoxes = true; // new
+//flag that toggles on and off for the guiding boxes for testing purposes
+const bool kShowLiveBoundingBoxes = true;
 
-// new
-// Draws the per-line boxes (thin, yellow) and the union box actually used
-// for the position decision (thick, green/red) on top of the preview.
-class _BoundingBoxPainter extends CustomPainter { // new
-  final DebugFrameInfo frame; // new
-  _BoundingBoxPainter(this.frame); // new
+class _BoundingBoxPainter extends CustomPainter { 
+  final DebugFrameInfo frame; 
+  _BoundingBoxPainter(this.frame); 
 
-  @override // new
-  void paint(Canvas canvas, Size size) { // new
-    if (frame.effectiveWidth == 0 || frame.effectiveHeight == 0) return; // new
-    // Scale from the OCR's coordinate space (effectiveWidth/Height) into // new
-    // whatever size this painter is actually being rendered at. // new
-    final double scaleX = size.width / frame.effectiveWidth; // new
-    final double scaleY = size.height / frame.effectiveHeight; // new
+  @override
+  void paint(Canvas canvas, Size size) { 
+    if (frame.effectiveWidth == 0 || frame.effectiveHeight == 0) return;
+    // Scale from the OCR's coordinate space (effectiveWidth/Height) into 
+    // whatever size this painter is actually being rendered at. 
+    final double scaleX = size.width / frame.effectiveWidth; 
+    final double scaleY = size.height / frame.effectiveHeight; 
 
     final Paint blockPaint = Paint() // new
       ..color = const Color(0x99FFEB3B) // new -- translucent yellow, individual detected lines
@@ -132,6 +121,21 @@ class _HomePageState extends State<HomePage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
+      appBar: AppBar(
+        title: const Text("Scanner"),
+        actions: [
+          // new -- opens the saved-titles list where entries can be deleted
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: "View saved titles",
+            onPressed: () {
+              Navigator.of(context).push(
+                MaterialPageRoute(builder: (context) => const LabelHistoryPage()),
+              );
+            },
+          ),
+        ],
+      ),
       body: _buildUI(),
     );
   }
@@ -199,7 +203,9 @@ class _HomePageState extends State<HomePage> {
                   // while moving the label around to pick good thresholds.
                   'area ${_debugFrame!.areaRatio?.toStringAsFixed(3) ?? '-'}  ' // new
                   'dx ${_debugFrame!.offsetXRatio?.toStringAsFixed(3) ?? '-'}  ' // new
-                  'dy ${_debugFrame!.offsetYRatio?.toStringAsFixed(3) ?? '-'}', // new
+                  'dy ${_debugFrame!.offsetYRatio?.toStringAsFixed(3) ?? '-'}  ' // new
+                  'angle ${_debugFrame!.debugRawAngle?.toStringAsFixed(1) ?? '-'}  ' // new -- raw estimateReadingAngle(), for tuning kAngleCorrectionDegrees
+                  'bucket ${_debugFrame!.debugBucket?.toString() ?? '-'}', // new -- corrected orientation bucket actually used for the decision
                   style: const TextStyle( // new
                     fontSize: 12, // new
                     fontFamily: 'monospace', // new
