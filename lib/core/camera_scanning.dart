@@ -34,6 +34,21 @@ class DebugFrameInfo {
   });
 }
 
+/// Information returned after a successful scan.
+class MedicationScanResult {
+  final String medicationName;
+  final String labelText;
+  final bool saved;
+  final bool duplicate;
+
+  const MedicationScanResult({
+    required this.medicationName,
+    required this.labelText,
+    required this.saved,
+    required this.duplicate,
+  });
+}
+
 class ScannerController {
   CameraController? cameraController;
 
@@ -46,26 +61,22 @@ class ScannerController {
   final FramePositionAnalyzer _positionAnalyzer =
   FramePositionAnalyzer();
 
-  // ================================================================
-  // VOICE GUIDANCE
-  // ================================================================
-
   final FlutterTts _tts = FlutterTts();
 
   bool _voiceGuidanceEnabled = false;
 
-  bool get voiceGuidanceEnabled =>
-      _voiceGuidanceEnabled;
+  bool _isSpeaking = false;
+  String? _pendingMessage;
 
-  /// Enable or disable the app's own voice guidance.
-  ///
-  /// Voice Guidance is separate from Android TalkBack / iOS VoiceOver.
+  bool get voiceGuidanceEnabled => _voiceGuidanceEnabled;
+
   Future<void> setVoiceGuidance(bool enabled) async {
     _voiceGuidanceEnabled = enabled;
 
     if (!enabled) {
-      // Stop any speech currently being played.
       await _tts.stop();
+      _isSpeaking = false;
+      _pendingMessage = null;
       return;
     }
 
@@ -74,44 +85,74 @@ class ScannerController {
 
   Future<void> _configureTts() async {
     await _tts.setLanguage('en-US');
-
-    // Slightly slower than normal speech so instructions
-    // are easier to understand.
     await _tts.setSpeechRate(0.45);
-
     await _tts.setVolume(1.0);
-
     await _tts.setPitch(1.0);
+  }
+
+  Future<void> speak(String message) async {
+    await _speak(message);
   }
 
   Future<void> _speak(String message) async {
     if (!_voiceGuidanceEnabled) {
+      debugPrint(
+        'TTS disabled. Skipping: $message',
+      );
       return;
     }
 
     try {
-      // Stop previous announcement before speaking the new one.
+      if (_isSpeaking) {
+        _pendingMessage = message;
+        return;
+      }
+
+      _isSpeaking = true;
+      _pendingMessage = null;
+
+      await Future.delayed(
+        const Duration(milliseconds: 150),
+      );
+
       await _tts.stop();
 
       await _tts.speak(message);
+
+      // Give Flutter TTS time to finish.
+      await Future.delayed(
+        const Duration(seconds: 4),
+      );
+
+      _isSpeaking = false;
+
+      if (_pendingMessage != null) {
+        final nextMessage = _pendingMessage;
+        _pendingMessage = null;
+
+        if (nextMessage != null) {
+          await _speak(nextMessage);
+        }
+      }
     } catch (e) {
       debugPrint(
         'Voice Guidance error: $e',
       );
+
+      _isSpeaking = false;
+      _pendingMessage = null;
     }
   }
-
-  // ================================================================
-  // SCANNING STATE
-  // ================================================================
 
   bool _liveScanningActive = true;
 
   bool get isLiveScanningActive =>
       _liveScanningActive;
 
-  final void Function(DebugFrameInfo? frame)?
-  onDebugFrame;
+  final void Function(DebugFrameInfo? frame)? onDebugFrame;
+
+  final void Function(MedicationScanResult result)?
+  onMedicationScanned;
 
   DateTime _lastLiveAnalysis =
   DateTime.fromMillisecondsSinceEpoch(0);
@@ -119,16 +160,12 @@ class ScannerController {
   static const Duration _liveAnalysisInterval =
   Duration(milliseconds: 400);
 
-  // Prevent repeatedly saying:
-  // "Medication is ready. Tap to scan."
   bool _hasAnnouncedReady = false;
 
-  // ================================================================
-  // CALLBACKS
-  // ================================================================
-
   final Function(String) onStatusUpdated;
+
   final Function(String) onWarningTriggered;
+
   final VoidCallback onCameraInitialized;
 
   ScannerController({
@@ -136,11 +173,8 @@ class ScannerController {
     required this.onWarningTriggered,
     required this.onCameraInitialized,
     this.onDebugFrame,
+    this.onMedicationScanned,
   });
-
-  // ================================================================
-  // START SCAN
-  // ================================================================
 
   void captureNext() {
     if (!_liveScanningActive) {
@@ -148,7 +182,6 @@ class ScannerController {
     }
 
     _captureNextFrame = true;
-
     _hasAnnouncedReady = false;
 
     onStatusUpdated(
@@ -159,18 +192,13 @@ class ScannerController {
       "Scanning medication. Please hold the medication steady.",
     );
   }
-
-  // ================================================================
-  // SCAN AGAIN
-  // ================================================================
-
   void resumeLiveScanning() {
     _liveScanningActive = true;
-
+    _captureNextFrame = false;
     _hasAnnouncedReady = false;
 
     onStatusUpdated(
-      "Point the camera at a label to scan.",
+      "Point the camera at a medication label to scan.",
     );
 
     _speak(
@@ -178,396 +206,373 @@ class ScannerController {
     );
   }
 
-  // ================================================================
-  // DISPOSE
-  // ================================================================
-
   Future<void> dispose() async {
     await _tts.stop();
     await cameraController?.dispose();
   }
 
-  // ================================================================
-  // CAMERA INITIALIZATION
-  // ================================================================
-
   Future<void> initializeCamera() async {
-    List<CameraDescription> cameras =
+    final List<CameraDescription> cameras =
     await availableCameras();
 
-    if (cameras.isNotEmpty) {
-      cameraController = CameraController(
-        cameras.first,
-        ResolutionPreset.max,
-        enableAudio: false,
-        imageFormatGroup:
-        Platform.isAndroid
-            ? ImageFormatGroup.yuv420
-            : ImageFormatGroup.bgra8888,
+    if (cameras.isEmpty) {
+      onStatusUpdated(
+        "No camera was found.",
       );
+      return;
+    }
 
-      await cameraController?.initialize();
+    cameraController = CameraController(
+      cameras.first,
+      ResolutionPreset.max,
+      enableAudio: false,
+      imageFormatGroup: Platform.isAndroid
+          ? ImageFormatGroup.yuv420
+          : ImageFormatGroup.bgra8888,
+    );
 
-      await cameraController?.setFocusMode(
-        FocusMode.auto,
-      );
+    await cameraController?.initialize();
 
-      onCameraInitialized();
+    await cameraController?.setFocusMode(
+      FocusMode.auto,
+    );
 
-      cameraController?.startImageStream(
-            (CameraImage image) async {
-          final bool shouldCaptureForSave =
-              _liveScanningActive &&
-                  _captureNextFrame;
+    onCameraInitialized();
 
-          final bool shouldAnalyzeLive =
-              _liveScanningActive &&
-                  DateTime.now().difference(
-                    _lastLiveAnalysis,
-                  ) >=
-                      _liveAnalysisInterval;
+    await cameraController?.startImageStream(
+          (CameraImage image) async {
+        final bool shouldCaptureForSave =
+            _liveScanningActive &&
+                _captureNextFrame;
 
-          if (!shouldCaptureForSave &&
-              !shouldAnalyzeLive) {
+        final bool shouldAnalyzeLive =
+            _liveScanningActive &&
+                DateTime.now().difference(
+                  _lastLiveAnalysis,
+                ) >=
+                    _liveAnalysisInterval;
+
+        if (!shouldCaptureForSave &&
+            !shouldAnalyzeLive) {
+          return;
+        }
+
+        if (shouldCaptureForSave) {
+          _captureNextFrame = false;
+        }
+
+        if (shouldAnalyzeLive) {
+          _lastLiveAnalysis = DateTime.now();
+        }
+
+        try {
+
+          final WriteBuffer allBytes =
+          WriteBuffer();
+
+          for (final Plane plane in image.planes) {
+            allBytes.putUint8List(
+              plane.bytes,
+            );
+          }
+
+          final Uint8List rawBytes =
+          allBytes.done().buffer.asUint8List();
+
+          final bool isAndroid =
+              Platform.isAndroid;
+
+          final int sensorOrientation =
+              cameraController!
+                  .description
+                  .sensorOrientation;
+
+          final RecognizedText recognizedText =
+          await _ocrService.scanLabel(
+            rawBytes,
+            image.width,
+            image.height,
+            isAndroid,
+            sensorOrientation,
+          );
+
+
+
+          final bool swapDims =
+              sensorOrientation == 90 ||
+                  sensorOrientation == 270;
+
+          final int effectiveWidth =
+          swapDims
+              ? image.height
+              : image.width;
+
+          final int effectiveHeight =
+          swapDims
+              ? image.width
+              : image.height;
+
+          final PositionFeedback positionFeedback =
+          _positionAnalyzer.analyze(
+            recognizedText,
+            effectiveWidth,
+            effectiveHeight,
+          );
+
+          if (onDebugFrame != null) {
+            onDebugFrame!(
+              DebugFrameInfo(
+                blockBoxes: recognizedText.blocks
+                    .map(
+                      (block) =>
+                  block.boundingBox,
+                )
+                    .toList(),
+                unionBox:
+                positionFeedback.boundingBox,
+                effectiveWidth:
+                effectiveWidth,
+                effectiveHeight:
+                effectiveHeight,
+                isWellPositioned:
+                positionFeedback
+                    .isWellPositioned,
+                feedbackMessage:
+                positionFeedback.message,
+                areaRatio:
+                positionFeedback.areaRatio,
+                offsetXRatio:
+                positionFeedback.offsetXRatio,
+                offsetYRatio:
+                positionFeedback.offsetYRatio,
+              ),
+            );
+          }
+
+          if (!positionFeedback
+              .isWellPositioned) {
+            if (shouldCaptureForSave ||
+                _liveScanningActive) {
+              onStatusUpdated(
+                positionFeedback.message,
+              );
+            }
+
             return;
           }
 
+
+          if (!shouldCaptureForSave) {
+            onStatusUpdated(
+              "${positionFeedback.message} Tap to scan.",
+            );
+
+            if (!_hasAnnouncedReady) {
+              _hasAnnouncedReady = true;
+
+              _speak(
+                "Medication is positioned correctly. Tap scan to capture it.",
+              );
+            }
+
+            return;
+          }
+
+          _liveScanningActive = false;
+
+          final String result =
+          recognizedText.text.trim();
+
+          final String medTitle =
+          _titleExtract
+              .extractTitle(
+            recognizedText,
+          )
+              .trim();
+
+          _lastScannedText = result;
+
+          if (result.isEmpty) {
+            onStatusUpdated(
+              "No text found.",
+            );
+
+            onMedicationScanned?.call(
+              const MedicationScanResult(
+                medicationName:
+                "Unknown medication",
+                labelText:
+                "No readable text was found.",
+                saved: false,
+                duplicate: false,
+              ),
+            );
+
+            await _speak(
+              "No medication text was found. Please try again.",
+            );
+
+            return;
+          }
+
+          if (medTitle.isEmpty) {
+            onStatusUpdated(
+              "Medication name could not be identified.\n\n"
+                  "Label text:\n$result",
+            );
+
+            onMedicationScanned?.call(
+              MedicationScanResult(
+                medicationName:
+                "Medication name not identified",
+                labelText: result,
+                saved: false,
+                duplicate: false,
+              ),
+            );
+
+            await _speak(
+              "I could not identify the medication name. "
+                  "The text I scanned says: $result",
+            );
+
+            return;
+          }
+
+          final recentScans =
+          await _dbService.outPutLabels(
+            whereArgs: [medTitle],
+            whereClause: 'text = ?',
+            orderBy: 'id DESC',
+            limitCount: 1,
+          );
+
+          bool warningFlag = false;
+
+          if (recentScans.isNotEmpty) {
+            final lastScanTime =
+            DateTime.parse(
+              recentScans.first.times,
+            );
+
+            final timeDifference =
+            DateTime.now()
+                .difference(lastScanTime);
+
+            if (timeDifference.inHours < 4) {
+              warningFlag = true;
+            }
+          }
+
+          if (warningFlag) {
+            onStatusUpdated(
+              "This medication was recently scanned.",
+            );
+
+            onMedicationScanned?.call(
+              MedicationScanResult(
+                medicationName: medTitle,
+                labelText: result,
+                saved: false,
+                duplicate: true,
+              ),
+            );
+
+            await _speak(
+              "Warning. "
+                  "$medTitle was recently scanned. "
+                  "The label says: $result",
+            );
+
+            await Future.delayed(
+              const Duration(milliseconds: 500),
+            );
+
+            onWarningTriggered(
+              medTitle,
+            );
+
+            return;
+          }
+
+          final newScan = ScannedLabels(
+            text: medTitle,
+            times:
+            DateTime.now().toIso8601String(),
+          );
+
+          await _dbService.insertLabels(
+            newScan,
+          );
+
+          onStatusUpdated(
+            "Medication identified.",
+          );
+
+          onMedicationScanned?.call(
+            MedicationScanResult(
+              medicationName: medTitle,
+              labelText: result,
+              saved: true,
+              duplicate: false,
+            ),
+          );
+
+          // Read the medicine name AND the OCR text.
+          await _speak(
+            "Medication identified as $medTitle. "
+                "The label says: $result",
+          );
+        } catch (e) {
+          final bool isBlurry =
+          e.toString().contains(
+            "BLURRY_FRAME",
+          );
+
           if (shouldCaptureForSave) {
-            _captureNextFrame = false;
-          }
-
-          if (shouldAnalyzeLive) {
-            _lastLiveAnalysis =
-                DateTime.now();
-          }
-
-          try {
-            // ======================================================
-            // CONVERT CAMERA IMAGE
-            // ======================================================
-
-            final WriteBuffer allBytes =
-            WriteBuffer();
-
-            for (final Plane plane
-            in image.planes) {
-              allBytes.putUint8List(
-                plane.bytes,
-              );
-            }
-
-            final Uint8List rawBytes =
-            allBytes
-                .done()
-                .buffer
-                .asUint8List();
-
-            final bool isAndroid =
-                Platform.isAndroid;
-
-            final int sensorOrientation =
-                cameraController!
-                    .description
-                    .sensorOrientation;
-
-            // ======================================================
-            // OCR
-            // ======================================================
-
-            final RecognizedText RTresult =
-            await _ocrService.scanLabel(
-              rawBytes,
-              image.width,
-              image.height,
-              isAndroid,
-              sensorOrientation,
-            );
-
-            // ======================================================
-            // POSITION ANALYSIS
-            // ======================================================
-
-            final bool swapDims =
-                sensorOrientation == 90 ||
-                    sensorOrientation == 270;
-
-            final int effectiveWidth =
-            swapDims
-                ? image.height
-                : image.width;
-
-            final int effectiveHeight =
-            swapDims
-                ? image.width
-                : image.height;
-
-            final PositionFeedback
-            positionFeedback =
-            _positionAnalyzer.analyze(
-              RTresult,
-              effectiveWidth,
-              effectiveHeight,
-            );
-
-            // ======================================================
-            // DEBUG FRAME
-            // ======================================================
-
-            if (onDebugFrame != null) {
-              onDebugFrame!(
-                DebugFrameInfo(
-                  blockBoxes: RTresult
-                      .blocks
-                      .map(
-                        (b) => b.boundingBox,
-                  )
-                      .toList(),
-                  unionBox:
-                  positionFeedback
-                      .boundingBox,
-                  effectiveWidth:
-                  effectiveWidth,
-                  effectiveHeight:
-                  effectiveHeight,
-                  isWellPositioned:
-                  positionFeedback
-                      .isWellPositioned,
-                  feedbackMessage:
-                  positionFeedback
-                      .message,
-                  areaRatio:
-                  positionFeedback
-                      .areaRatio,
-                  offsetXRatio:
-                  positionFeedback
-                      .offsetXRatio,
-                  offsetYRatio:
-                  positionFeedback
-                      .offsetYRatio,
-                ),
-              );
-            }
-
-            // ======================================================
-            // MEDICATION NOT WELL POSITIONED
-            // ======================================================
-
-            if (!positionFeedback
-                .isWellPositioned) {
-              if (shouldCaptureForSave ||
-                  _liveScanningActive) {
-                onStatusUpdated(
-                  positionFeedback.message,
-                );
-              }
-
-              return;
-            }
-
-            // ======================================================
-            // MEDICATION IS WELL POSITIONED
-            // ======================================================
-
-            if (!shouldCaptureForSave) {
+            if (isBlurry) {
               onStatusUpdated(
-                "${positionFeedback.message} Tap to scan.",
+                "Too blurry. Please hold still.",
               );
 
-              // Only say this once rather than every 400ms.
-              if (!_hasAnnouncedReady) {
-                _hasAnnouncedReady = true;
+              HapticFeedback.vibrate();
 
-                _speak(
-                  "Medication is positioned correctly. Tap scan to capture it.",
-                );
-              }
-
-              return;
-            }
-
-            // ======================================================
-            // CAPTURED
-            // ======================================================
-
-            _liveScanningActive = false;
-
-            final String result =
-                RTresult.text;
-
-            final String medTitle =
-            _titleExtract.extractTitle(
-              RTresult,
-            );
-
-            _lastScannedText = result;
-
-            // ======================================================
-            // DATABASE LOGIC
-            // ======================================================
-
-            if (medTitle.isNotEmpty) {
-              final recentScans =
-              await _dbService
-                  .outPutLabels(
-                whereArgs: [medTitle],
-                whereClause: 'text = ?',
-                orderBy: 'id DESC',
-                limitCount: 1,
+              await _speak(
+                "The image is too blurry. "
+                    "Please hold the medication steady and try again.",
               );
-
-              bool warningFlag = false;
-
-              if (recentScans.isNotEmpty) {
-                final lastScanTime =
-                DateTime.parse(
-                  recentScans.first.times,
-                );
-
-                final timeDifference =
-                DateTime.now().difference(
-                  lastScanTime,
-                );
-
-                if (timeDifference.inHours <
-                    4) {
-                  warningFlag = true;
-                }
-              }
-
-              // ====================================================
-              // DUPLICATE MEDICATION
-              // ====================================================
-
-              if (warningFlag) {
-                onStatusUpdated(
-                  "Warning: '$medTitle' recently scanned.\n\n"
-                      "Label text:\n$_lastScannedText",
-                );
-
-                _speak(
-                  "Warning. $medTitle was recently scanned.",
-                );
-
-                onWarningTriggered(
-                  medTitle,
-                );
-              }
-
-              // ====================================================
-              // NEW MEDICATION
-              // ====================================================
-
-              else {
-                final newScan =
-                ScannedLabels(
-                  text: medTitle,
-                  times: DateTime.now()
-                      .toIso8601String(),
-                );
-
-                await _dbService
-                    .insertLabels(
-                  newScan,
-                );
-
-                onStatusUpdated(
-                  "Saved '$medTitle' to database.\n\n"
-                      "Label text:\n$_lastScannedText",
-                );
-
-                _speak(
-                  "Medication identified as $medTitle. "
-                      "The medication has been saved.",
-                );
-              }
-            }
-
-            // ======================================================
-            // NO TITLE FOUND
-            // ======================================================
-
-            else {
-              if (result.isEmpty) {
-                onStatusUpdated(
-                  "No text found.",
-                );
-
-                _speak(
-                  "No medication text was found. Please try again.",
-                );
-              } else {
-                onStatusUpdated(
-                  result,
-                );
-
-                _speak(
-                  "Medication text identified.",
-                );
-              }
-            }
-          }
-
-          // ========================================================
-          // ERROR HANDLING
-          // ========================================================
-
-          catch (e) {
-            final bool isBlurry =
-            e.toString().contains(
-              "BLURRY_FRAME",
-            );
-
-            if (shouldCaptureForSave) {
-              if (isBlurry) {
-                onStatusUpdated(
-                  "Too blurry. Please hold still.",
-                );
-
-                HapticFeedback.vibrate();
-
-                _speak(
-                  "The image is too blurry. "
-                      "Please hold the medication steady and try again.",
-                );
-              } else {
-                onStatusUpdated(
-                  "Error: $e",
-                );
-
-                _speak(
-                  "The medication could not be scanned. "
-                      "Please try again.",
-                );
-              }
-            }
-
-            else if (isBlurry) {
+            } else {
               onStatusUpdated(
-                "Too blurry to preview. Hold steady.",
+                "The medication could not be scanned.",
+              );
+
+              await _speak(
+                "The medication could not be scanned. "
+                    "Please try again.",
               );
             }
-
-            if (onDebugFrame != null) {
-              onDebugFrame!(null);
-            }
+          } else if (isBlurry) {
+            onStatusUpdated(
+              "Too blurry to preview. Hold steady.",
+            );
           }
-        },
-      );
-    }
+
+          if (onDebugFrame != null) {
+            onDebugFrame!(null);
+          }
+        }
+      },
+    );
   }
 
-  // ================================================================
-  // FORCE SAVE
-  // ================================================================
 
   Future<void> forceSaveLabel(
       String medTitle,
       ) async {
-    final forcedScan =
-    ScannedLabels(
+    final forcedScan = ScannedLabels(
       text: medTitle,
-      times: DateTime.now()
-          .toIso8601String(),
+      times:
+      DateTime.now().toIso8601String(),
     );
 
     await _dbService.insertLabels(
@@ -575,12 +580,21 @@ class ScannerController {
     );
 
     onStatusUpdated(
-      "Forced save for '$medTitle'.\n\n"
-          "Label text:\n$_lastScannedText",
+      "Medication saved.",
     );
 
-    _speak(
-      "$medTitle has been saved.",
+    onMedicationScanned?.call(
+      MedicationScanResult(
+        medicationName: medTitle,
+        labelText: _lastScannedText,
+        saved: true,
+        duplicate: false,
+      ),
+    );
+
+    await _speak(
+      "$medTitle has been saved. "
+          "The label says: $_lastScannedText",
     );
   }
 }
