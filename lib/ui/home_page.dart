@@ -1,20 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
+
 import '../core/camera_scanning.dart';
 
 class AccessibilitySettings {
-  bool voiceGuidance;
-  bool largeText;
-  bool highContrast;
-  bool hapticFeedback;
-
-  AccessibilitySettings({
-    this.voiceGuidance = false,
-    this.largeText = true,
-    this.highContrast = false,
-    this.hapticFeedback = true,
-  });
+  bool voiceGuidance = false;
+  bool largeText = true;
+  bool highContrast = false;
+  bool hapticFeedback = true;
 }
 
 class HomePage extends StatefulWidget {
@@ -34,493 +30,881 @@ class _HomePageState extends State<HomePage> {
       "Point the camera at a medication label to scan.";
 
   bool _cameraInitialized = false;
+
   DebugFrameInfo? _debugFrame;
+
+  MedicationScanResult? _scanResult;
+
+  DateTime _lastHapticTime =
+  DateTime.fromMillisecondsSinceEpoch(0);
+
+  final ScrollController _pageScrollController =
+  ScrollController();
+
+  final ScrollController _resultScrollController =
+  ScrollController();
 
   @override
   void initState() {
     super.initState();
 
     _scanner = ScannerController(
-      onStatusUpdated: (message) {
-        if (!mounted) return;
-
-        setState(() {
-          _statusMessage = message;
-        });
-      },
-      onWarningTriggered: (medTitle) {
-        if (!mounted) return;
-        _showDuplicateWarning(medTitle);
-      },
-      onCameraInitialized: () {
-        if (!mounted) return;
-
-        setState(() {
-          _cameraInitialized = true;
-        });
-      },
-      onDebugFrame: (frame) {
-        if (!mounted) return;
-
-        setState(() {
-          _debugFrame = frame;
-        });
-        if (frame != null) {
-          _handleHapticPositionFeedback(frame);
-        }
-      },
+      onStatusUpdated: _handleStatusUpdated,
+      onWarningTriggered: _handleWarning,
+      onCameraInitialized: _handleCameraInitialized,
+      onDebugFrame: _handleDebugFrame,
+      onMedicationScanned: _handleMedicationScanned,
     );
 
-    _scanner.initializeCamera();
+    _initializeCamera();
+  }
+
+  Future<void> _initializeCamera() async {
+    try {
+      await _scanner.initializeCamera();
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        _statusMessage =
+        "Camera could not be initialized.";
+      });
+    }
+  }
+
+  void _handleCameraInitialized() {
+    if (!mounted) return;
+
+    setState(() {
+      _cameraInitialized = true;
+    });
+  }
+
+  void _handleStatusUpdated(String message) {
+    if (!mounted) return;
+
+    setState(() {
+      _statusMessage = message;
+    });
+  }
+
+  void _handleDebugFrame(DebugFrameInfo? frame) {
+    if (!mounted) return;
+
+    setState(() {
+      _debugFrame = frame;
+    });
+
+    if (frame != null &&
+        frame.isWellPositioned &&
+        _accessibility.hapticFeedback) {
+      _handleHapticPositionFeedback();
+    }
+  }
+
+  void _handleHapticPositionFeedback() {
+    final now = DateTime.now();
+
+    if (now.difference(_lastHapticTime) <
+        const Duration(milliseconds: 500)) {
+      return;
+    }
+
+    _lastHapticTime = now;
+
+    HapticFeedback.mediumImpact();
+  }
+
+  void _handleMedicationScanned(
+      MedicationScanResult result,
+      ) {
+    if (!mounted) return;
+
+    setState(() {
+      _scanResult = result;
+    });
+
+    // Give Flutter a moment to build the result card,
+    // then scroll down to it.
+    Future.delayed(
+      const Duration(milliseconds: 150),
+          () {
+        if (!mounted ||
+            !_pageScrollController.hasClients) {
+          return;
+        }
+
+        _pageScrollController.animateTo(
+          _pageScrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 500),
+          curve: Curves.easeOut,
+        );
+      },
+    );
+  }
+
+  void _handleWarning(String medTitle) {
+    if (!mounted) return;
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        final bool highContrast =
+            _accessibility.highContrast;
+
+        return AlertDialog(
+          backgroundColor:
+          highContrast ? Colors.black : Colors.white,
+          title: Row(
+            children: [
+              Icon(
+                Icons.warning_amber_rounded,
+                color: highContrast
+                    ? Colors.yellow
+                    : Colors.orange,
+                size: 30,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  "Recently Scanned",
+                  style: TextStyle(
+                    color: highContrast
+                        ? Colors.white
+                        : Colors.black87,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+          content: Text(
+            "'$medTitle' was scanned within the last 4 hours.\n\n"
+                "Would you like to save it again?",
+            style: TextStyle(
+              color: highContrast
+                  ? Colors.white
+                  : Colors.black87,
+              fontSize: 16,
+              height: 1.4,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext);
+
+                _scanner.resumeLiveScanning();
+
+                setState(() {
+                  _scanResult = null;
+                });
+              },
+              child: Text(
+                "Cancel",
+                style: TextStyle(
+                  color: highContrast
+                      ? Colors.white
+                      : Theme.of(context)
+                      .colorScheme
+                      .primary,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            ElevatedButton(
+              onPressed: () async {
+                Navigator.pop(dialogContext);
+
+                await _scanner.forceSaveLabel(
+                  medTitle,
+                );
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: highContrast
+                    ? Colors.white
+                    : Theme.of(context)
+                    .colorScheme
+                    .primary,
+                foregroundColor: highContrast
+                    ? Colors.black
+                    : Colors.white,
+              ),
+              child: const Text(
+                "Log Anyway",
+              ),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _scanAgain() {
+    setState(() {
+      _scanResult = null;
+      _statusMessage =
+      "Point the camera at a medication label to scan.";
+      _debugFrame = null;
+    });
+
+    _scanner.resumeLiveScanning();
+
+    Future.delayed(
+      const Duration(milliseconds: 100),
+          () {
+        if (!mounted ||
+            !_pageScrollController.hasClients) {
+          return;
+        }
+
+        _pageScrollController.animateTo(
+          0,
+          duration: const Duration(milliseconds: 400),
+          curve: Curves.easeOut,
+        );
+      },
+    );
   }
 
   @override
   void dispose() {
+    _pageScrollController.dispose();
+    _resultScrollController.dispose();
     _scanner.dispose();
     super.dispose();
   }
 
-  // haptic feedback
-  // - medium vibration when positioned correctly
-  // - light vibration when not positioned correctly
-  //
-  // The accessibility switch controls whether these vibrations happen.
-  void _handleHapticPositionFeedback(DebugFrameInfo frame) {
-    if (!_accessibility.hapticFeedback) return;
-
-    if (frame.isWellPositioned) {
-      HapticFeedback.mediumImpact();
-    } else {
-      HapticFeedback.lightImpact();
-    }
+  double _textScale() {
+    return _accessibility.largeText ? 1.15 : 1.0;
   }
 
-  void _buttonHaptic() {
-    if (_accessibility.hapticFeedback) {
-      HapticFeedback.mediumImpact();
-    }
+  @override
+  Widget build(BuildContext context) {
+    final bool highContrast =
+        _accessibility.highContrast;
+
+    final Color backgroundColor =
+    highContrast ? Colors.black : Colors.white;
+
+    final Color foregroundColor =
+    highContrast ? Colors.white : Colors.black87;
+
+    final Color secondaryColor =
+    highContrast ? Colors.white : Colors.black54;
+
+    final screenHeight =
+        MediaQuery.of(context).size.height;
+
+    final cameraHeight = screenHeight < 700
+        ? 250.0
+        : screenHeight < 850
+        ? 320.0
+        : 380.0;
+
+    return Scaffold(
+      backgroundColor: backgroundColor,
+      appBar: AppBar(
+        backgroundColor: highContrast
+            ? Colors.black
+            : Theme.of(context).colorScheme.primary,
+        foregroundColor: Colors.white,
+        title: Text(
+          "Medication Scanner",
+          style: TextStyle(
+            fontSize: 20 * _textScale(),
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        actions: [
+          IconButton(
+            tooltip: "Accessibility settings",
+            onPressed: _openAccessibilitySettings,
+            icon: const Icon(
+              Icons.accessibility_new,
+            ),
+          ),
+        ],
+      ),
+      body: SafeArea(
+        child: Scrollbar(
+          controller: _pageScrollController,
+          thumbVisibility: true,
+          trackVisibility: true,
+          thickness: 7,
+          radius: const Radius.circular(10),
+          child: SingleChildScrollView(
+            controller: _pageScrollController,
+            padding: const EdgeInsets.fromLTRB(
+              16,
+              16,
+              16,
+              32,
+            ),
+            child: Column(
+              crossAxisAlignment:
+              CrossAxisAlignment.stretch,
+              children: [
+                // STATUS
+                _buildStatusCard(
+                  foregroundColor,
+                  secondaryColor,
+                  highContrast,
+                ),
+
+                const SizedBox(height: 16),
+
+                // CAMERA
+                _buildCameraPreview(
+                  cameraHeight,
+                  highContrast,
+                ),
+
+                const SizedBox(height: 16),
+
+                // SCAN BUTTON
+                SizedBox(
+                  height: 60,
+                  child: ElevatedButton.icon(
+                    onPressed: _cameraInitialized &&
+                        _scanResult == null
+                        ? () {
+                      _scanner.captureNext();
+                    }
+                        : null,
+                    icon: const Icon(
+                      Icons.camera_alt,
+                      size: 28,
+                    ),
+                    label: Text(
+                      "Scan Medication",
+                      style: TextStyle(
+                        fontSize: 18 * _textScale(),
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: highContrast
+                          ? Colors.white
+                          : Theme.of(context)
+                          .colorScheme
+                          .primary,
+                      foregroundColor: highContrast
+                          ? Colors.black
+                          : Colors.white,
+                      disabledBackgroundColor:
+                      highContrast
+                          ? Colors.grey.shade800
+                          : Colors.grey.shade300,
+                      disabledForegroundColor:
+                      highContrast
+                          ? Colors.grey.shade500
+                          : Colors.grey.shade600,
+                      shape:
+                      RoundedRectangleBorder(
+                        borderRadius:
+                        BorderRadius.circular(14),
+                      ),
+                      side: highContrast
+                          ? const BorderSide(
+                        color: Colors.white,
+                        width: 2,
+                      )
+                          : null,
+                    ),
+                  ),
+                ),
+
+                const SizedBox(height: 16),
+
+                // SCAN RESULT
+                if (_scanResult != null)
+                  _buildMedicationResult(
+                    _scanResult!,
+                    highContrast,
+                    foregroundColor,
+                    secondaryColor,
+                  ),
+
+                const SizedBox(height: 16),
+
+                // LIVE POSITION FEEDBACK
+                if (_scanResult == null &&
+                    _debugFrame != null)
+                  _buildPositionFeedback(
+                    _debugFrame!,
+                    highContrast,
+                    foregroundColor,
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
   }
 
-  // Accessibility theme
-  ThemeData _buildAccessibleTheme(BuildContext context) {
-    final textScale =
-    _accessibility.largeText ? 1.25 : 1.0;
-
-    if (_accessibility.highContrast) {
-      return Theme.of(context).copyWith(
-        brightness: Brightness.dark,
-        scaffoldBackgroundColor: Colors.black,
-
-        colorScheme: const ColorScheme.dark(
-          primary: Colors.white,
-          onPrimary: Colors.black,
-          secondary: Colors.yellow,
-          onSecondary: Colors.black,
-          surface: Colors.black,
-          onSurface: Colors.white,
-          error: Colors.yellow,
-          onError: Colors.black,
-        ),
-
-        appBarTheme: const AppBarTheme(
-          backgroundColor: Colors.black,
-          foregroundColor: Colors.white,
-          elevation: 0,
-        ),
-
-        cardTheme: const CardThemeData(
-          color: Colors.black,
-          surfaceTintColor: Colors.transparent,
-          elevation: 0,
-          margin: EdgeInsets.only(bottom: 12),
-          shape: RoundedRectangleBorder(
-            side: BorderSide(
-              color: Colors.white,
-              width: 2,
-            ),
-            borderRadius: BorderRadius.all(
-              Radius.circular(16),
-            ),
+  Widget _buildStatusCard(
+      Color foregroundColor,
+      Color secondaryColor,
+      bool highContrast,
+      ) {
+    return Semantics(
+      liveRegion: true,
+      label: "Scanner status",
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: highContrast
+              ? Colors.black
+              : Colors.grey.shade100,
+          borderRadius: BorderRadius.circular(14),
+          border: Border.all(
+            color: highContrast
+                ? Colors.white
+                : Colors.grey.shade300,
+            width: highContrast ? 2 : 1,
           ),
         ),
-
-        switchTheme: SwitchThemeData(
-          thumbColor:
-          WidgetStateProperty.resolveWith<Color>(
-                (states) {
-              if (states.contains(WidgetState.selected)) {
-                return Colors.black;
-              }
-
-              return Colors.white;
-            },
-          ),
-          trackColor:
-          WidgetStateProperty.resolveWith<Color>(
-                (states) {
-              if (states.contains(WidgetState.selected)) {
-                return Colors.yellow;
-              }
-
-              return Colors.black;
-            },
-          ),
-          trackOutlineColor:
-          WidgetStateProperty.all(Colors.white),
-        ),
-
-        textTheme: Theme.of(context)
-            .textTheme
-            .apply(
-          bodyColor: Colors.white,
-          displayColor: Colors.white,
-        ),
-
-        elevatedButtonTheme:
-        ElevatedButtonThemeData(
-          style: ElevatedButton.styleFrom(
-            backgroundColor: Colors.white,
-            foregroundColor: Colors.black,
-            minimumSize:
-            const Size(double.infinity, 76),
-            side: const BorderSide(
-              color: Colors.white,
-              width: 3,
+        child: Row(
+          crossAxisAlignment:
+          CrossAxisAlignment.start,
+          children: [
+            Icon(
+              Icons.info_outline,
+              color: foregroundColor,
+              size: 28,
             ),
-            shape: RoundedRectangleBorder(
-              borderRadius: BorderRadius.circular(14),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                _statusMessage,
+                style: TextStyle(
+                  color: foregroundColor,
+                  fontSize: 16 * _textScale(),
+                  height: 1.4,
+                ),
+              ),
             ),
-            textStyle: TextStyle(
-              fontSize: 20 * textScale,
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildCameraPreview(
+      double cameraHeight,
+      bool highContrast,
+      ) {
+    return Container(
+      height: cameraHeight,
+      width: double.infinity,
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: highContrast
+              ? Colors.white
+              : Colors.black,
+          width: highContrast ? 3 : 1,
+        ),
+      ),
+      clipBehavior: Clip.hardEdge,
+      child: !_cameraInitialized ||
+          _scanner.cameraController == null
+          ? const Center(
+        child: CircularProgressIndicator(
+          color: Colors.white,
+        ),
+      )
+          : Stack(
+        fit: StackFit.expand,
+        children: [
+          CameraPreview(
+            _scanner.cameraController!,
+          ),
+
+          if (_debugFrame != null)
+            CustomPaint(
+              painter: OCRBoundingBoxPainter(
+                debugFrame: _debugFrame!,
+              ),
+            ),
+
+          Positioned(
+            top: 12,
+            left: 12,
+            right: 12,
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 12,
+                vertical: 8,
+              ),
+              decoration: BoxDecoration(
+                color:
+                Colors.black.withOpacity(0.75),
+                borderRadius:
+                BorderRadius.circular(10),
+              ),
+              child: Text(
+                "Position the medication label inside the frame",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize:
+                  14 * _textScale(),
+                  fontWeight:
+                  FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPositionFeedback(
+      DebugFrameInfo frame,
+      bool highContrast,
+      Color foregroundColor,
+      ) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: highContrast
+            ? Colors.black
+            : Colors.grey.shade100,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: frame.isWellPositioned
+              ? (highContrast
+              ? Colors.white
+              : Colors.green)
+              : (highContrast
+              ? Colors.white
+              : Colors.orange),
+          width: highContrast ? 2 : 1,
+        ),
+      ),
+      child: Row(
+        children: [
+          Icon(
+            frame.isWellPositioned
+                ? Icons.check_circle_outline
+                : Icons.center_focus_strong,
+            color: foregroundColor,
+            size: 28,
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Text(
+              frame.feedbackMessage,
+              style: TextStyle(
+                color: foregroundColor,
+                fontSize: 16 * _textScale(),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildMedicationResult(
+      MedicationScanResult result,
+      bool highContrast,
+      Color foregroundColor,
+      Color secondaryColor,
+      ) {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: highContrast
+            ? Colors.black
+            : Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: highContrast
+              ? Colors.white
+              : Theme.of(context)
+              .colorScheme
+              .primary,
+          width: highContrast ? 3 : 2,
+        ),
+        boxShadow: highContrast
+            ? null
+            : [
+          BoxShadow(
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+            color: Colors.black
+                .withOpacity(0.08),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment:
+        CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Icon(
+                result.duplicate
+                    ? Icons.warning_amber_rounded
+                    : Icons.check_circle,
+                color: foregroundColor,
+                size: 32,
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  result.duplicate
+                      ? "Medication Scanned"
+                      : "Medication Identified",
+                  style: TextStyle(
+                    color: foregroundColor,
+                    fontSize: 21 * _textScale(),
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 18),
+
+          Text(
+            "Medication name",
+            style: TextStyle(
+              color: secondaryColor,
+              fontSize: 14 * _textScale(),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+
+          const SizedBox(height: 4),
+
+          Text(
+            result.medicationName,
+            style: TextStyle(
+              color: foregroundColor,
+              fontSize: 24 * _textScale(),
               fontWeight: FontWeight.bold,
             ),
           ),
-        ),
 
-        iconButtonTheme: IconButtonThemeData(
-          style: IconButton.styleFrom(
-            foregroundColor: Colors.white,
-          ),
-        ),
+          const SizedBox(height: 20),
 
-        dividerTheme: const DividerThemeData(
-          color: Colors.white,
-          thickness: 2,
-        ),
-      );
-    }
-
-    return Theme.of(context).copyWith(
-      brightness: Brightness.light,
-      scaffoldBackgroundColor:
-      const Color(0xFFF5F5F5),
-
-      colorScheme: ColorScheme.fromSeed(
-        seedColor: Colors.indigo,
-        brightness: Brightness.light,
-      ),
-
-      elevatedButtonTheme:
-      ElevatedButtonThemeData(
-        style: ElevatedButton.styleFrom(
-          minimumSize:
-          const Size(double.infinity, 76),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(14),
-          ),
-          textStyle: TextStyle(
-            fontSize: 20 * textScale,
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ),
-    );
-  }
-
-  // Build
-  @override
-  Widget build(BuildContext context) {
-    final textScale =
-    _accessibility.largeText ? 1.25 : 1.0;
-
-    return MediaQuery(
-      data: MediaQuery.of(context).copyWith(
-        textScaler:
-        TextScaler.linear(textScale),
-      ),
-      child: Theme(
-        data: _buildAccessibleTheme(context),
-        child: Scaffold(
-          backgroundColor:
-          _accessibility.highContrast
-              ? Colors.black
-              : const Color(0xFFF5F5F5),
-          appBar: _buildAppBar(),
-          body: _buildUI(),
-        ),
-      ),
-    );
-  }
-
-  // app bar
-  PreferredSizeWidget _buildAppBar() {
-    return AppBar(
-      title: Semantics(
-        header: true,
-        child: const Text(
-          "Medication Scanner",
-          style: TextStyle(
-            fontWeight: FontWeight.bold,
-          ),
-        ),
-      ),
-      actions: [
-        Semantics(
-          button: true,
-          label: "Accessibility settings",
-          hint: "Open accessibility settings",
-          child: IconButton(
-            icon: const Icon(
-              Icons.accessibility_new,
-              size: 30,
+          Text(
+            "Label information",
+            style: TextStyle(
+              color: foregroundColor,
+              fontSize: 18 * _textScale(),
+              fontWeight: FontWeight.bold,
             ),
-            tooltip: "Accessibility settings",
-            onPressed: () {
-              _buttonHaptic();
-              _showAccessibilitySettings();
-            },
           ),
-        ),
-      ],
+
+          const SizedBox(height: 8),
+
+          Container(
+            constraints: const BoxConstraints(
+              maxHeight: 220,
+            ),
+            padding: const EdgeInsets.all(14),
+            decoration: BoxDecoration(
+              color: highContrast
+                  ? Colors.black
+                  : Colors.grey.shade100,
+              borderRadius:
+              BorderRadius.circular(12),
+              border: Border.all(
+                color: highContrast
+                    ? Colors.white
+                    : Colors.grey.shade400,
+              ),
+            ),
+            child: Scrollbar(
+              controller:
+              _resultScrollController,
+              thumbVisibility: true,
+              trackVisibility: true,
+              child: SingleChildScrollView(
+                controller:
+                _resultScrollController,
+                child: Text(
+                  result.labelText.isEmpty
+                      ? "No additional label information was detected."
+                      : result.labelText,
+                  style: TextStyle(
+                    color: foregroundColor,
+                    fontSize: 16 * _textScale(),
+                    height: 1.5,
+                  ),
+                ),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 14),
+
+          if (result.saved)
+            Row(
+              children: [
+                Icon(
+                  Icons.storage,
+                  color: foregroundColor,
+                  size: 22,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    "This medication has been saved.",
+                    style: TextStyle(
+                      color: foregroundColor,
+                      fontSize:
+                      15 * _textScale(),
+                      fontWeight:
+                      FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+
+          const SizedBox(height: 18),
+
+          SizedBox(
+            height: 56,
+            child: ElevatedButton.icon(
+              onPressed: _scanAgain,
+              icon: const Icon(
+                Icons.refresh,
+                size: 26,
+              ),
+              label: Text(
+                "Scan Again",
+                style: TextStyle(
+                  fontSize: 17 * _textScale(),
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: highContrast
+                    ? Colors.white
+                    : Theme.of(context)
+                    .colorScheme
+                    .primary,
+                foregroundColor: highContrast
+                    ? Colors.black
+                    : Colors.white,
+                side: highContrast
+                    ? const BorderSide(
+                  color: Colors.white,
+                  width: 2,
+                )
+                    : null,
+                shape:
+                RoundedRectangleBorder(
+                  borderRadius:
+                  BorderRadius.circular(14),
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  // main ui
-  Widget _buildUI() {
-    final highContrast =
+  Widget _buildAccessibleSwitch({
+    required BuildContext context,
+    required String title,
+    required String description,
+    required IconData icon,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+  }) {
+    final bool highContrast =
         _accessibility.highContrast;
 
-    final pageBackground =
-    highContrast
-        ? Colors.black
-        : const Color(0xFFF5F5F5);
+    final Color foreground =
+    highContrast ? Colors.white : Colors.black87;
 
-    final primaryText =
-    highContrast
-        ? Colors.white
-        : Colors.black;
+    final Color secondary =
+    highContrast ? Colors.white : Colors.black54;
 
-    final statusBackground =
-    highContrast
-        ? Colors.black
-        : Colors.white;
-
-    final borderColor =
+    final Color border =
     highContrast
         ? Colors.white
-        : Colors.black;
+        : Colors.grey.shade400;
 
-    return Container(
-      color: pageBackground,
-      child: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
+    return Semantics(
+      label: title,
+      hint: description,
+      toggled: value,
+      child: InkWell(
+        onTap: () {
+          onChanged(!value);
+        },
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          padding: const EdgeInsets.all(14),
+          decoration: BoxDecoration(
+            color: highContrast
+                ? Colors.black
+                : Colors.grey.shade50,
+            borderRadius:
+            BorderRadius.circular(14),
+            border: Border.all(
+              color: border,
+              width: highContrast ? 2 : 1,
+            ),
+          ),
+          child: Row(
             children: [
-
-              // status card
-
-              Semantics(
-                liveRegion: true,
-                label: "Scanner status",
-                value: _statusMessage,
-                child: Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.all(16),
-                  margin:
-                  const EdgeInsets.only(bottom: 12),
-                  decoration: BoxDecoration(
-                    color: statusBackground,
-                    borderRadius:
-                    BorderRadius.circular(16),
-                    border: Border.all(
-                      color: borderColor,
-                      width: highContrast ? 3 : 1,
-                    ),
-                  ),
-                  child: Text(
-                    _statusMessage,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: primaryText,
-                      fontSize: 17,
-                      fontWeight: FontWeight.w600,
-                      height: 1.4,
-                    ),
-                  ),
-                ),
+              Icon(
+                icon,
+                color: foreground,
+                size: 28,
               ),
 
-              // Camera
+              const SizedBox(width: 12),
+
               Expanded(
-                child: Container(
-                  width: double.infinity,
-                  decoration: BoxDecoration(
-                    color: Colors.black,
-                    borderRadius:
-                    BorderRadius.circular(16),
-                    border: Border.all(
-                      color: highContrast
-                          ? Colors.white
-                          : Colors.black,
-                      width: highContrast ? 4 : 2,
-                    ),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: _cameraInitialized &&
-                      _scanner.cameraController !=
-                          null &&
-                      _scanner.cameraController!
-                          .value
-                          .isInitialized
-                      ? Stack(
-                    fit: StackFit.expand,
-                    children: [
-                      CameraPreview(
-                        _scanner.cameraController!,
+                child: Column(
+                  crossAxisAlignment:
+                  CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      title,
+                      style: TextStyle(
+                        color: foreground,
+                        fontSize: 17,
+                        fontWeight:
+                        FontWeight.bold,
                       ),
-
-                      // OCR bounding boxes
-                      if (_debugFrame != null)
-                        CustomPaint(
-                          painter:
-                          _BoundingBoxPainter(
-                            frame: _debugFrame!,
-                            highContrast:
-                            highContrast,
-                          ),
-                        ),
-
-                      // Positioning feedback
-                      if (_debugFrame != null &&
-                          _debugFrame!
-                              .feedbackMessage
-                              .isNotEmpty)
-                        Positioned(
-                          left: 12,
-                          right: 12,
-                          bottom: 12,
-                          child: Semantics(
-                            liveRegion: true,
-                            label:
-                            "Positioning feedback",
-                            value: _debugFrame!
-                                .feedbackMessage,
-                            child: Container(
-                              padding:
-                              const EdgeInsets.all(
-                                  12),
-                              decoration:
-                              BoxDecoration(
-                                color: Colors.black
-                                    .withValues(
-                                  alpha: 0.8,
-                                ),
-                                borderRadius:
-                                BorderRadius
-                                    .circular(12),
-                                border: highContrast
-                                    ? Border.all(
-                                  color:
-                                  Colors.white,
-                                  width: 2,
-                                )
-                                    : null,
-                              ),
-                              child: Text(
-                                _debugFrame!
-                                    .feedbackMessage,
-                                textAlign:
-                                TextAlign.center,
-                                style:
-                                const TextStyle(
-                                  color: Colors.white,
-                                  fontWeight:
-                                  FontWeight.bold,
-                                  fontSize: 16,
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  )
-                      : Semantics(
-                    label:
-                    "Camera preview loading",
-                    child: const Center(
-                      child:
-                      CircularProgressIndicator(),
                     ),
-                  ),
+                    const SizedBox(height: 4),
+                    Text(
+                      description,
+                      style: TextStyle(
+                        color: secondary,
+                        fontSize: 14,
+                        height: 1.35,
+                      ),
+                    ),
+                  ],
                 ),
               ),
 
-              const SizedBox(height: 16),
+              const SizedBox(width: 8),
 
-              // Scan button
-              Semantics(
-                button: true,
-                label: _scanner.isLiveScanningActive
-                    ? "Scan medication"
-                    : "Scan another medication",
-                hint:
-                "Double tap to scan the medication label",
-                enabled: true,
-                child: ElevatedButton.icon(
-                  icon: Icon(
-                    _scanner.isLiveScanningActive
-                        ? Icons.camera_alt
-                        : Icons.refresh,
-                    size: 28,
-                  ),
-                  label: Text(
-                    _scanner.isLiveScanningActive
-                        ? "Scan"
-                        : "Scan Again",
-                  ),
-                  onPressed: () {
-                    _buttonHaptic();
-
-                    if (!_scanner
-                        .isLiveScanningActive) {
-                      _scanner
-                          .resumeLiveScanning();
-                    }
-
-                    _scanner.captureNext();
-                  },
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              // bottom status
-
-              Semantics(
-                liveRegion: true,
-                label: "Scanner instruction",
-                child: Text(
-                  _scanner.isLiveScanningActive
-                      ? "Ready to scan"
-                      : "Scan completed",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: primaryText,
-                    fontSize: 15,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
+              Switch(
+                value: value,
+                onChanged: onChanged,
               ),
             ],
           ),
@@ -529,108 +913,158 @@ class _HomePageState extends State<HomePage> {
     );
   }
 
-  // accessibility settings
-  void _showAccessibilitySettings() {
-    showModalBottomSheet(
+  Future<void> _openAccessibilitySettings() async {
+    await showModalBottomSheet(
       context: context,
       isScrollControlled: true,
-      backgroundColor:
-      _accessibility.highContrast
-          ? Colors.black
-          : Colors.white,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(
-          top: Radius.circular(24),
-        ),
-      ),
-      builder: (context) {
+      backgroundColor: Colors.transparent,
+      builder: (sheetContext) {
         return StatefulBuilder(
           builder: (
               context,
-              setModalState,
+              setSheetState,
               ) {
-            final highContrast =
+            final bool highContrast =
                 _accessibility.highContrast;
 
-            return Theme(
-              data: _buildAccessibleTheme(context),
-              child: SafeArea(
-                child: Padding(
-                  padding: const EdgeInsets.fromLTRB(
-                    16,
-                    12,
-                    16,
-                    24,
+            final Color background =
+            highContrast
+                ? Colors.black
+                : Colors.white;
+
+            final Color foreground =
+            highContrast
+                ? Colors.white
+                : Colors.black87;
+
+            final Color secondary =
+            highContrast
+                ? Colors.white
+                : Colors.black54;
+
+            final Color border =
+            highContrast
+                ? Colors.white
+                : Colors.grey.shade400;
+
+            return SafeArea(
+              child: Container(
+                constraints: BoxConstraints(
+                  maxHeight:
+                  MediaQuery.of(context)
+                      .size
+                      .height *
+                      0.90,
+                ),
+                decoration: BoxDecoration(
+                  color: background,
+                  border: Border(
+                    top: BorderSide(
+                      color: border,
+                      width:
+                      highContrast ? 3 : 1,
+                    ),
                   ),
+                  borderRadius:
+                  const BorderRadius.vertical(
+                    top: Radius.circular(24),
+                  ),
+                ),
+                child: Scrollbar(
+                  thumbVisibility: true,
+                  trackVisibility: true,
+                  thickness: 7,
+                  radius:
+                  const Radius.circular(10),
                   child: SingleChildScrollView(
+                    padding:
+                    const EdgeInsets.fromLTRB(
+                      20,
+                      16,
+                      20,
+                      32,
+                    ),
                     child: Column(
                       crossAxisAlignment:
-                      CrossAxisAlignment.start,
+                      CrossAxisAlignment
+                          .stretch,
                       children: [
-                        // Drag handle
                         Center(
                           child: Container(
                             width: 45,
                             height: 5,
-                            decoration: BoxDecoration(
-                              color: highContrast
-                                  ? Colors.white
-                                  : Colors.grey,
+                            decoration:
+                            BoxDecoration(
+                              color: secondary,
                               borderRadius:
-                              BorderRadius.circular(10),
+                              BorderRadius
+                                  .circular(10),
                             ),
                           ),
                         ),
 
                         const SizedBox(height: 20),
 
-                        Text(
-                          "Accessibility Settings",
-                          style: TextStyle(
-                            fontSize: 24,
-                            fontWeight:
-                            FontWeight.bold,
-                            color: highContrast
-                                ? Colors.white
-                                : Colors.black,
-                          ),
+                        Row(
+                          children: [
+                            Icon(
+                              Icons
+                                  .accessibility_new,
+                              color: foreground,
+                              size: 30,
+                            ),
+                            const SizedBox(
+                              width: 12,
+                            ),
+                            Expanded(
+                              child: Text(
+                                "Accessibility Settings",
+                                style: TextStyle(
+                                  color:
+                                  foreground,
+                                  fontSize: 23,
+                                  fontWeight:
+                                  FontWeight
+                                      .bold,
+                                ),
+                              ),
+                            ),
+                          ],
                         ),
 
-                        const SizedBox(height: 6),
+                        const SizedBox(height: 8),
 
                         Text(
                           "Adjust the scanner to make it easier to use.",
                           style: TextStyle(
-                            fontSize: 15,
-                            color: highContrast
-                                ? Colors.white
-                                : Colors.black87,
+                            color: secondary,
+                            fontSize: 16,
+                            height: 1.4,
                           ),
                         ),
 
                         const SizedBox(height: 20),
 
-                        // Voice guidance
-                        _buildAccessibilitySwitch(
+                        // VOICE GUIDANCE
+                        _buildAccessibleSwitch(
                           context: context,
-                          setModalState:
-                          setModalState,
-                          title: "Voice Guidance",
+                          title: "Voice guidance",
                           description:
-                          "Speak important scanning instructions and results.",
+                          "Reads scanning instructions and medication results aloud.",
                           icon:
-                          Icons.record_voice_over,
+                          Icons.volume_up_outlined,
                           value: _accessibility
                               .voiceGuidance,
-                          onChanged:
-                              (value) async {
-                            setModalState(() {
-                              _accessibility
-                                  .voiceGuidance = value;
-                            });
+                          onChanged: (value) async {
+                            // Update HomePage's setting.
+                            _accessibility
+                                .voiceGuidance = value;
 
-                            setState(() {});
+                            // IMPORTANT:
+                            // Rebuild the bottom sheet immediately.
+                            setSheetState(() {});
 
+                            // Update the scanner.
                             await _scanner
                                 .setVoiceGuidance(
                               value,
@@ -638,169 +1072,191 @@ class _HomePageState extends State<HomePage> {
                           },
                         ),
 
-                        // large text
+                        const SizedBox(height: 12),
 
-                        _buildAccessibilitySwitch(
+                        // LARGE TEXT
+                        _buildAccessibleSwitch(
                           context: context,
-                          setModalState:
-                          setModalState,
-                          title: "Large Text",
+                          title: "Large text",
                           description:
-                          "Increase text size throughout the scanner.",
+                          "Increases the size of text throughout the app.",
                           icon: Icons.text_fields,
-                          value: _accessibility
-                              .largeText,
+                          value:
+                          _accessibility.largeText,
                           onChanged: (value) {
-                            setModalState(() {
-                              _accessibility
-                                  .largeText = value;
-                            });
+                            _accessibility
+                                .largeText = value;
 
-                            setState(() {});
-                          },
-                        ),
-
-                        // High contrast
-
-                        _buildAccessibilitySwitch(
-                          context: context,
-                          setModalState:
-                          setModalState,
-                          title: "High Contrast",
-                          description:
-                          "Use stronger borders, black backgrounds and bright text.",
-                          icon:
-                          Icons.contrast,
-                          value: _accessibility
-                              .highContrast,
-                          onChanged: (value) {
-                            setModalState(() {
-                              _accessibility
-                                  .highContrast = value;
-                            });
-
-                            setState(() {});
-                          },
-                        ),
-
-                        // haptic feedback
-                        _buildAccessibilitySwitch(
-                          context: context,
-                          setModalState:
-                          setModalState,
-                          title: "Haptic Feedback",
-                          description:
-                          "Use vibration to indicate important scanner states.",
-                          icon:
-                          Icons.vibration,
-                          value: _accessibility
-                              .hapticFeedback,
-                          onChanged: (value) {
-                            setModalState(() {
-                              _accessibility
-                                  .hapticFeedback = value;
-                            });
-
-                            setState(() {});
+                            setSheetState(() {});
                           },
                         ),
 
                         const SizedBox(height: 12),
 
-                        // =================================================================
-                        // SCREEN READER INFORMATION
-                        // =================================================================
+                        // HIGH CONTRAST
+                        _buildAccessibleSwitch(
+                          context: context,
+                          title: "High contrast",
+                          description:
+                          "Uses stronger contrast between text, controls and backgrounds.",
+                          icon: Icons.contrast,
+                          value: _accessibility
+                              .highContrast,
+                          onChanged: (value) {
+                            _accessibility
+                                .highContrast = value;
 
+                            setSheetState(() {});
+                          },
+                        ),
+
+                        const SizedBox(height: 12),
+
+                        // HAPTIC FEEDBACK
+                        _buildAccessibleSwitch(
+                          context: context,
+                          title: "Haptic feedback",
+                          description:
+                          "Provides vibration feedback when the medication is positioned correctly.",
+                          icon: Icons.vibration,
+                          value: _accessibility
+                              .hapticFeedback,
+                          onChanged: (value) {
+                            _accessibility
+                                .hapticFeedback = value;
+
+                            setSheetState(() {});
+
+                            if (value) {
+                              HapticFeedback
+                                  .mediumImpact();
+                            }
+                          },
+                        ),
+
+                        const SizedBox(height: 24),
+
+                        // SCREEN READER INFO
                         Container(
-                          width: double.infinity,
                           padding:
-                          const EdgeInsets.all(16),
-                          decoration: BoxDecoration(
+                          const EdgeInsets.all(
+                            16,
+                          ),
+                          decoration:
+                          BoxDecoration(
                             color: highContrast
                                 ? Colors.black
-                                : const Color(
-                              0xFFF5F5F5,
+                                : Colors.grey.shade100,
+                            border: Border.all(
+                              color: border,
+                              width: highContrast
+                                  ? 2
+                                  : 1,
                             ),
                             borderRadius:
-                            BorderRadius.circular(16),
-                            border: Border.all(
-                              color: highContrast
-                                  ? Colors.white
-                                  : Colors.black26,
-                              width:
-                              highContrast ? 2 : 1,
-                            ),
+                            BorderRadius
+                                .circular(14),
                           ),
-                          child: Row(
+                          child: Column(
                             crossAxisAlignment:
-                            CrossAxisAlignment.start,
+                            CrossAxisAlignment
+                                .start,
                             children: [
-                              Icon(
-                                Icons
-                                    .accessibility_new,
-                                color: highContrast
-                                    ? Colors.white
-                                    : Colors.indigo,
-                                size: 28,
+                              Row(
+                                children: [
+                                  Icon(
+                                    Icons
+                                        .record_voice_over,
+                                    color:
+                                    foreground,
+                                  ),
+                                  const SizedBox(
+                                    width: 10,
+                                  ),
+                                  Expanded(
+                                    child: Text(
+                                      "Screen readers",
+                                      style:
+                                      TextStyle(
+                                        color:
+                                        foreground,
+                                        fontSize: 18,
+                                        fontWeight:
+                                        FontWeight
+                                            .bold,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
 
-                              const SizedBox(width: 12),
+                              const SizedBox(
+                                height: 8,
+                              ),
 
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment:
-                                  CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      "Screen Reader Support",
-                                      style: TextStyle(
-                                        fontWeight:
-                                        FontWeight.bold,
-                                        fontSize: 17,
-                                        color:
-                                        highContrast
-                                            ? Colors.white
-                                            : Colors.black,
-                                      ),
-                                    ),
-
-                                    const SizedBox(
-                                      height: 6,
-                                    ),
-
-                                    Text(
-                                      "This app supports VoiceOver on iOS and TalkBack on Android.",
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        color:
-                                        highContrast
-                                            ? Colors.white
-                                            : Colors.black87,
-                                        height: 1.4,
-                                      ),
-                                    ),
-
-                                    const SizedBox(
-                                      height: 8,
-                                    ),
-
-                                    Text(
-                                      "If you use VoiceOver or TalkBack, consider keeping Voice Guidance off to avoid overlapping speech.",
-                                      style: TextStyle(
-                                        fontSize: 14,
-                                        fontWeight:
-                                        FontWeight.w600,
-                                        color:
-                                        highContrast
-                                            ? Colors.yellow
-                                            : Colors.black87,
-                                        height: 1.4,
-                                      ),
-                                    ),
-                                  ],
+                              Text(
+                                "The app supports Android TalkBack and iOS VoiceOver. Buttons and settings have descriptive labels.",
+                                style: TextStyle(
+                                  color: secondary,
+                                  fontSize: 15,
+                                  height: 1.4,
                                 ),
                               ),
                             ],
+                          ),
+                        ),
+
+                        const SizedBox(height: 24),
+
+                        SizedBox(
+                          height: 56,
+                          child:
+                          ElevatedButton(
+                            onPressed: () {
+                              Navigator.pop(
+                                context,
+                              );
+                            },
+                            style: ElevatedButton
+                                .styleFrom(
+                              backgroundColor:
+                              highContrast
+                                  ? Colors.white
+                                  : Theme.of(
+                                context,
+                              )
+                                  .colorScheme
+                                  .primary,
+                              foregroundColor:
+                              highContrast
+                                  ? Colors.black
+                                  : Colors.white,
+                              side: highContrast
+                                  ? const BorderSide(
+                                color:
+                                Colors
+                                    .white,
+                                width: 2,
+                              )
+                                  : null,
+                              shape:
+                              RoundedRectangleBorder(
+                                borderRadius:
+                                BorderRadius
+                                    .circular(
+                                  14,
+                                ),
+                              ),
+                            ),
+                            child: const Text(
+                              "Done",
+                              style: TextStyle(
+                                fontSize: 18,
+                                fontWeight:
+                                FontWeight
+                                    .bold,
+                              ),
+                            ),
                           ),
                         ),
                       ],
@@ -813,185 +1269,19 @@ class _HomePageState extends State<HomePage> {
         );
       },
     );
-  }
 
-  // accessibility switch
-
-  Widget _buildAccessibilitySwitch({
-    required BuildContext context,
-    required StateSetter setModalState,
-    required String title,
-    required String description,
-    required IconData icon,
-    required bool value,
-    required ValueChanged<bool> onChanged,
-  }) {
-    final highContrast =
-        _accessibility.highContrast;
-
-    return Semantics(
-      toggled: value,
-      label:
-      "$title. ${value ? "On" : "Off"}. $description",
-      child: Container(
-        margin:
-        const EdgeInsets.only(bottom: 12),
-        decoration: BoxDecoration(
-          color: highContrast
-              ? Colors.black
-              : Colors.white,
-          borderRadius:
-          BorderRadius.circular(16),
-          border: Border.all(
-            color: highContrast
-                ? Colors.white
-                : Colors.black26,
-            width: highContrast ? 2 : 1,
-          ),
-        ),
-        child: SwitchListTile(
-          contentPadding:
-          const EdgeInsets.symmetric(
-            horizontal: 16,
-            vertical: 6,
-          ),
-          secondary: Icon(
-            icon,
-            size: 28,
-            color: highContrast
-                ? Colors.white
-                : Colors.indigo,
-          ),
-          title: Text(
-            title,
-            style: TextStyle(
-              fontWeight: FontWeight.bold,
-              fontSize: 17,
-              color: highContrast
-                  ? Colors.white
-                  : Colors.black,
-            ),
-          ),
-          subtitle: Text(
-            description,
-            style: TextStyle(
-              fontSize: 14,
-              color: highContrast
-                  ? Colors.white
-                  : Colors.black87,
-              height: 1.3,
-            ),
-          ),
-          value: value,
-          onChanged: (newValue) {
-            _buttonHaptic();
-            onChanged(newValue);
-          },
-        ),
-      ),
-    );
-  }
-
-  void _showDuplicateWarning(String medTitle) {
-    final highContrast =
-        _accessibility.highContrast;
-
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) {
-        return AlertDialog(
-          backgroundColor:
-          highContrast
-              ? Colors.black
-              : Colors.white,
-          shape: RoundedRectangleBorder(
-            borderRadius:
-            BorderRadius.circular(18),
-            side: highContrast
-                ? const BorderSide(
-              color: Colors.white,
-              width: 2,
-            )
-                : BorderSide.none,
-          ),
-          title: Text(
-            "Medication Already Scanned",
-            style: TextStyle(
-              color: highContrast
-                  ? Colors.white
-                  : Colors.black,
-              fontWeight: FontWeight.bold,
-            ),
-          ),
-          content: Text(
-            "'$medTitle' was scanned recently.",
-            style: TextStyle(
-              color: highContrast
-                  ? Colors.white
-                  : Colors.black87,
-              height: 1.4,
-            ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () {
-                _buttonHaptic();
-
-                Navigator.of(context).pop();
-
-                _scanner.resumeLiveScanning();
-              },
-              child: Text(
-                "Cancel",
-                style: TextStyle(
-                  color: highContrast
-                      ? Colors.white
-                      : Colors.indigo,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-            ),
-
-            ElevatedButton(
-              style: ElevatedButton.styleFrom(
-                backgroundColor:
-                highContrast
-                    ? Colors.yellow
-                    : Colors.indigo,
-                foregroundColor:
-                highContrast
-                    ? Colors.black
-                    : Colors.white,
-              ),
-              onPressed: () {
-                _buttonHaptic();
-
-                Navigator.of(context).pop();
-
-                _scanner.forceSaveLabel(
-                  medTitle,
-                );
-              },
-              child: const Text(
-                "Log Anyway",
-              ),
-            ),
-          ],
-        );
-      },
-    );
+    // Rebuild HomePage after the settings sheet closes.
+    if (mounted) {
+      setState(() {});
+    }
   }
 }
 
-class _BoundingBoxPainter
-    extends CustomPainter {
-  final DebugFrameInfo frame;
-  final bool highContrast;
+class OCRBoundingBoxPainter extends CustomPainter {
+  final DebugFrameInfo debugFrame;
 
-  _BoundingBoxPainter({
-    required this.frame,
-    required this.highContrast,
+  OCRBoundingBoxPainter({
+    required this.debugFrame,
   });
 
   @override
@@ -999,31 +1289,31 @@ class _BoundingBoxPainter
       Canvas canvas,
       Size size,
       ) {
-    if (frame.effectiveWidth <= 0 ||
-        frame.effectiveHeight <= 0) {
+    if (debugFrame.blockBoxes.isEmpty) {
       return;
     }
 
-    final scaleX =
-        size.width / frame.effectiveWidth;
+    final double scaleX =
+        size.width / debugFrame.effectiveWidth;
 
-    final scaleY =
-        size.height / frame.effectiveHeight;
+    final double scaleY =
+        size.height / debugFrame.effectiveHeight;
 
-    // =========================================================================
-    // OCR BLOCK BOXES
-    // =========================================================================
-
-    final blockPaint = Paint()
+    final Paint blockPaint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth =
-      highContrast ? 2.5 : 1.5
-      ..color = highContrast
-          ? Colors.white
-          : Colors.yellow;
+      ..strokeWidth = 2
+      ..color = Colors.yellow;
 
-    for (final box in frame.blockBoxes) {
-      final rect = Rect.fromLTRB(
+    final Paint unionPaint = Paint()
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 4
+      ..color = debugFrame.isWellPositioned
+          ? Colors.green
+          : Colors.red;
+
+    for (final Rect box
+    in debugFrame.blockBoxes) {
+      final Rect scaled = Rect.fromLTRB(
         box.left * scaleX,
         box.top * scaleY,
         box.right * scaleX,
@@ -1031,39 +1321,23 @@ class _BoundingBoxPainter
       );
 
       canvas.drawRect(
-        rect,
+        scaled,
         blockPaint,
       );
     }
 
-    // =========================================================================
-    // UNION BOX
-    // =========================================================================
+    if (debugFrame.unionBox != null) {
+      final Rect box = debugFrame.unionBox!;
 
-    if (frame.unionBox != null) {
-      final box = frame.unionBox!;
-
-      final rect = Rect.fromLTRB(
+      final Rect scaled = Rect.fromLTRB(
         box.left * scaleX,
         box.top * scaleY,
         box.right * scaleX,
         box.bottom * scaleY,
       );
 
-      final unionPaint = Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth =
-        highContrast ? 6 : 4
-        ..color = highContrast
-            ? (frame.isWellPositioned
-            ? Colors.white
-            : Colors.yellow)
-            : (frame.isWellPositioned
-            ? Colors.green
-            : Colors.red);
-
       canvas.drawRect(
-        rect,
+        scaled,
         unionPaint,
       );
     }
@@ -1071,10 +1345,8 @@ class _BoundingBoxPainter
 
   @override
   bool shouldRepaint(
-      covariant _BoundingBoxPainter oldDelegate,
+      covariant OCRBoundingBoxPainter oldDelegate,
       ) {
-    return oldDelegate.frame != frame ||
-        oldDelegate.highContrast !=
-            highContrast;
+    return oldDelegate.debugFrame != debugFrame;
   }
 }
